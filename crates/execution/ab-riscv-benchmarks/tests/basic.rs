@@ -5,11 +5,10 @@ use ab_core_primitives::ed25519::{Ed25519PublicKey, Ed25519Signature};
 use ab_riscv_benchmarks::Benchmarks;
 use ab_riscv_benchmarks::host_utils::{
     Blake3HashChunkInternalArgs, Ed25519VerifyInternalArgs, LazyInstructionFetcher,
-    RISCV_CONTRACT_BYTES, UNDECODABLE_INSTRUCTION,
+    RISCV_CONTRACT_BYTES, TestExtState, UNDECODABLE_INSTRUCTION,
 };
 use ab_riscv_interpreter::basic::{
     BasicEagerInstructions, BasicInterpreterState, BasicMemory,
-    IllegalEcallSystemInstructionHandler,
 };
 use ab_riscv_interpreter::prelude::*;
 use ab_riscv_primitives::prelude::Register;
@@ -96,7 +95,7 @@ where
 
             let mut state = BasicInterpreterState {
                 regs,
-                env: IllegalEcallSystemInstructionHandler,
+                env: TestExtState::default(),
                 memory,
                 instruction_fetcher,
             };
@@ -120,7 +119,7 @@ where
 
             let mut state = BasicInterpreterState {
                 regs,
-                env: IllegalEcallSystemInstructionHandler,
+                env: TestExtState::default(),
                 memory,
                 instruction_fetcher,
             };
@@ -145,7 +144,7 @@ where
             ContractInstruction::execute_threaded(
                 instruction_fetcher,
                 &mut threaded_regs,
-                IllegalEcallSystemInstructionHandler,
+                &mut TestExtState::default(),
                 &mut memory,
             )
             .outcome

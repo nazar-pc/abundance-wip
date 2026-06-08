@@ -5,11 +5,10 @@ use ab_core_primitives::ed25519::{Ed25519PublicKey, Ed25519Signature};
 use ab_riscv_benchmarks::Benchmarks;
 use ab_riscv_benchmarks::host_utils::{
     Blake3HashChunkInternalArgs, Ed25519VerifyInternalArgs, LazyInstructionFetcher,
-    RISCV_CONTRACT_BYTES, UNDECODABLE_INSTRUCTION,
+    RISCV_CONTRACT_BYTES, TestExtState, UNDECODABLE_INSTRUCTION,
 };
 use ab_riscv_interpreter::basic::{
     BasicEagerInstructions, BasicInterpreterState, BasicMemory,
-    IllegalEcallSystemInstructionHandler,
 };
 use ab_riscv_interpreter::prelude::*;
 use ab_riscv_primitives::prelude::Register;
@@ -117,7 +116,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     let mut lazy_state = BasicInterpreterState {
         regs: ContractRegisters::<false>::default(),
-        env: IllegalEcallSystemInstructionHandler,
+        env: TestExtState::default(),
         memory,
         // SAFETY: Program counter is set later to the correct address, all instructions are valid
         // and contract ends with a jump
@@ -138,7 +137,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     let mut eager_state = BasicInterpreterState {
         regs: ContractRegisters::<false>::default(),
-        env: IllegalEcallSystemInstructionHandler,
+        env: TestExtState::default(),
         memory,
         // SAFETY: Program counter is set later to the correct address
         instruction_fetcher: unsafe { instructions.fetcher(benchmarks_blake3_hash_chunk_addr) },
@@ -146,7 +145,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     let mut eager_state_zerostore = BasicInterpreterState {
         regs: ContractRegisters::<true>::default(),
-        env: IllegalEcallSystemInstructionHandler,
+        env: TestExtState::default(),
         memory,
         // SAFETY: Program counter is set later to the correct address
         instruction_fetcher: unsafe { instructions.fetcher(benchmarks_blake3_hash_chunk_addr) },
@@ -246,7 +245,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 ContractInstruction::execute_threaded(
                     state.instruction_fetcher,
                     &mut state.regs,
-                    IllegalEcallSystemInstructionHandler,
+                    &mut state.env,
                     &mut state.memory,
                 )
                 .outcome
@@ -356,7 +355,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 ContractInstruction::execute_threaded(
                     state.instruction_fetcher,
                     &mut state.regs,
-                    IllegalEcallSystemInstructionHandler,
+                    &mut state.env,
                     &mut state.memory,
                 )
                 .outcome

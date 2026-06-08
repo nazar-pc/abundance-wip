@@ -219,6 +219,10 @@ const unsafe impl ZcmpRegister for ContractRegister {
         Rv64ZbcInstruction,
         Rv64ZknInstruction,
         ZicondInstruction,
+        ZicsrInstruction,
+        ZvbbInstruction,
+        ZvbcInstruction,
+        ZveXxInstruction,
     ],
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

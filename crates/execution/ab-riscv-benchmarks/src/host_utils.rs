@@ -140,6 +140,204 @@ pub const UNDECODABLE_INSTRUCTION: ContractInstruction = ContractInstruction::Un
     rs1: ContractRegister::Zero,
     rs2: ContractRegister::Zero,
 };
+#[derive(Debug)]
+pub struct TestExtState {
+    vregs: VectorRegisterFile<const { TestExtState::VLEN }>,
+    vstart: Vstart,
+    vxsat: bool,
+    vxrm: Vxrm,
+    vcsr: u64,
+    vl: Vl,
+    vtype: Option<Vtype<const { TestExtState::ELEN }, const { TestExtState::VLEN }>>,
+}
+
+impl Default for TestExtState {
+    #[inline(always)]
+    fn default() -> Self {
+        Self {
+            vregs: VectorRegisterFile::default(),
+            vstart: Vstart::ZERO,
+            vxsat: false,
+            vxrm: Vxrm::default(),
+            vcsr: 0,
+            vl: Vl::ZERO,
+            vtype: None,
+        }
+    }
+}
+
+impl Csrs<<ContractInstruction as Instruction>::Reg> for TestExtState {
+    #[inline(always)]
+    fn privilege_level(&self) -> PrivilegeLevel {
+        PrivilegeLevel::Machine
+    }
+
+    fn read_csr(&self, csr_index: u16) -> Result<u64, CsrError> {
+        let csr =
+            VectorCsr::from_csr_index(csr_index).ok_or(CsrError::IllegalRead { csr_index })?;
+        Ok(match csr {
+            VectorCsr::Vstart => u64::from(u16::from(self.vstart)),
+            VectorCsr::Vxsat => u64::from(self.vxsat),
+            VectorCsr::Vxrm => u64::from(self.vxrm.to_bits()),
+            VectorCsr::Vcsr => self.vcsr,
+            VectorCsr::Vl => u64::from(self.vl),
+            VectorCsr::Vtype => {
+                if let Some(vt) = self.vtype {
+                    vt.to_raw::<ContractRegister>()
+                } else {
+                    Vtype::<const { Self::ELEN }, const { Self::VLEN }>::illegal_raw::<
+                        ContractRegister,
+                    >()
+                }
+            }
+            VectorCsr::Vlenb => u64::from(Self::VLEN.bytes()),
+        })
+    }
+
+    fn write_csr(&mut self, csr_index: u16, value: u64) -> Result<(), CsrError> {
+        let csr =
+            VectorCsr::from_csr_index(csr_index).ok_or(CsrError::IllegalRead { csr_index })?;
+        match csr {
+            VectorCsr::Vstart => {
+                self.vstart = Vstart::from(value.truncate::<u16>());
+            }
+            VectorCsr::Vxsat => {
+                self.vxsat = (value & 1) == 1;
+            }
+            VectorCsr::Vxrm => {
+                self.vxrm = Vxrm::from_bits(value as u8);
+            }
+            VectorCsr::Vcsr => {
+                self.vcsr = value;
+            }
+            VectorCsr::Vl => {
+                self.vl = Vl::new(value.truncate::<u32>()).unwrap_or_default();
+            }
+            VectorCsr::Vtype => {
+                self.vtype = Vtype::from_raw::<ContractRegister>(value);
+            }
+            VectorCsr::Vlenb => {
+                cold_path();
+                // Read-only CSR: `VLEN` is fixed
+                return Err(CsrError::ReadOnly { csr_index });
+            }
+        }
+        Ok(())
+    }
+}
+
+impl VectorRegisters for TestExtState
+where
+    Self: Csrs<<ContractInstruction as Instruction>::Reg>,
+{
+    const ELEN: Elen = Elen::L64;
+    const VLEN: Vlen = Vlen::L512;
+
+    #[inline(always)]
+    fn read_vregs(&self) -> &VectorRegisterFile<{ Self::VLEN }> {
+        &self.vregs
+    }
+
+    #[inline(always)]
+    fn write_vregs(&mut self) -> &mut VectorRegisterFile<{ Self::VLEN }> {
+        &mut self.vregs
+    }
+
+    #[inline(always)]
+    fn vector_instructions_allowed(&self) -> bool {
+        true
+    }
+
+    #[inline(always)]
+    fn mark_vs_dirty(&mut self) {
+        // No-op
+    }
+}
+
+impl VectorRegistersExt<<ContractInstruction as Instruction>::Reg> for TestExtState {
+    #[inline(always)]
+    fn vstart(&self) -> Vstart {
+        self.vstart
+    }
+
+    #[inline(always)]
+    fn set_vstart(&mut self, vstart: Vstart) {
+        self.vstart = vstart;
+    }
+
+    #[inline(always)]
+    fn reset_vstart(&mut self) {
+        self.set_vstart(Vstart::ZERO);
+    }
+
+    #[inline(always)]
+    fn vxsat(&self) -> bool {
+        self.vxsat
+    }
+
+    #[inline(always)]
+    fn set_vxsat(&mut self, vxsat: bool) {
+        self.vxsat = vxsat;
+        let masked = u64::from(vxsat);
+        // Mirror `vxsat` into `vcsr[0]`, preserving `vcsr[2:1]` (`vxrm`)
+        self.vcsr = (self.vcsr & !u64::from(1u8)) | masked;
+    }
+
+    #[inline(always)]
+    fn vxrm(&self) -> Vxrm {
+        self.vxrm
+    }
+
+    #[inline(always)]
+    fn set_vxrm(&mut self, vxrm: Vxrm) {
+        self.vxrm = vxrm;
+        let masked = u64::from(vxrm.to_bits());
+        // Mirror `vxrm` into `vcsr[2:1]`, preserving `vcsr[0]` (`vxsat`)
+        self.vcsr = (self.vcsr & !u64::from(0b110u8)) | (masked << 1u8);
+    }
+
+    #[inline(always)]
+    fn vl(&self) -> Vl {
+        self.vl
+    }
+
+    #[inline(always)]
+    fn set_vl(&mut self, vl: Vl) {
+        self.vl = vl;
+    }
+
+    #[inline(always)]
+    fn vtype(&self) -> Option<Vtype<{ Self::ELEN }, { Self::VLEN }>> {
+        self.vtype
+    }
+
+    #[inline(always)]
+    fn set_vtype(&mut self, vtype: Option<Vtype<{ Self::ELEN }, { Self::VLEN }>>) {
+        self.vtype = vtype;
+    }
+}
+
+impl<Regs, Memory, PC> SystemInstructionHandler<ContractRegister, Regs, Memory, PC> for TestExtState
+where
+    PC: ProgramCounter<u64, Memory>,
+{
+    fn handle_ecall(
+        &mut self,
+        _regs: &mut Regs,
+        _memory: &mut Memory,
+        program_counter: &mut PC,
+    ) -> Result<ControlFlow<()>, ExecutionError<u64>> {
+        Err(ExecutionError::IllegalInstruction {
+            address: PackedAddress::new(program_counter.old_pc(size_of::<u32>() as u8)),
+        })
+    }
+}
+
+// Convenience for threaded execution
+ab_riscv_interpreter::impl_vector_registers_for_mut_ref!(
+    TestExtState,
+    <ContractInstruction as Instruction>::Reg
+);
 
 /// Lazy instruction fetcher implementation
 #[derive(Debug, Copy, Clone)]

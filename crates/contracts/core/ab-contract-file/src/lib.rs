@@ -27,7 +27,7 @@
 //! `ab-contracts-tooling` crate exists that can build and convert contracts to this format both
 //! programmatically and using CLI interface.
 
-#![expect(incomplete_features, reason = "explicit_tail_calls")]
+#![expect(incomplete_features, reason = "generic_const_*, explicit_tail_calls")]
 #![feature(
     const_block_items,
     const_cmp,
@@ -40,7 +40,11 @@
     derive_const,
     explicit_tail_calls,
     fn_align,
+    generic_const_args,
+    inherent_associated_types,
+    macroless_generic_const_args,
     maybe_uninit_fill,
+    min_generic_const_args,
     signed_bigint_helpers,
     trusted_len,
     try_blocks
@@ -61,7 +65,7 @@ use core::iter;
 use core::iter::TrustedLen;
 use core::mem::MaybeUninit;
 use replace_with::replace_with_or_abort;
-use tracing::{debug, trace};
+// use tracing::{debug, trace};
 
 /// Magic bytes at the beginning of the file
 pub const CONTRACT_FILE_MAGIC: [u8; 4] = *b"ABC0";
@@ -277,8 +281,10 @@ pub enum ContractFileParseError {
 }
 
 impl From<MetadataDecodingError<'_>> for ContractFileParseError {
-    fn from(error: MetadataDecodingError<'_>) -> Self {
-        debug!(?error, "Failed to decode metadata item");
+    fn from(_error: MetadataDecodingError<'_>) -> Self {
+        // TODO: Un-comment logging once it is working:
+        //  https://github.com/rust-lang/rust/issues/157152
+        // debug!(?error, "Failed to decode metadata item");
         Self::MetadataDecoding
     }
 }
@@ -399,7 +405,9 @@ impl<'a> ContractFile<'a> {
 
             while let Some(maybe_metadata_item) = metadata_decoder.decode_next() {
                 let metadata_item = maybe_metadata_item?;
-                trace!(?metadata_item, "Decoded metadata item");
+                // TODO: Un-comment logging once it is working:
+                //  https://github.com/rust-lang/rust/issues/157152
+                // trace!(?metadata_item, "Decoded metadata item");
 
                 let mut methods_metadata_decoder = metadata_item.into_decoder();
                 loop {
@@ -414,7 +422,9 @@ impl<'a> ContractFile<'a> {
                     let before_remaining_bytes = method_metadata_decoder.remaining_metadata_bytes();
                     let (_, method_metadata_item) = method_metadata_decoder.decode_next()?;
 
-                    trace!(?method_metadata_item, "Decoded method metadata item");
+                    // TODO: Un-comment logging once it is working:
+                    //  https://github.com/rust-lang/rust/issues/157152
+                    // trace!(?method_metadata_item, "Decoded method metadata item");
                     metadata_num_methods += 1;
 
                     let method_metadata_bytes = remaining_metadata_bytes
@@ -629,7 +639,7 @@ impl<'a> ContractFile<'a> {
     /// Use [`Self::contract_memory_size()`] to identify the exact necessary amount of memory.
     #[must_use = "Must check that contract memory was large enough"]
     pub fn initialize_contract_memory(&self, mut contract_memory: &mut [MaybeUninit<u8>]) -> bool {
-        let contract_memory_input_size = contract_memory.len();
+        // let contract_memory_input_size = contract_memory.len();
         let read_only_section_offset = ContractFileHeader::SIZE
             + u32::from(self.num_methods) * ContractFileMethodMetadata::SIZE;
         let read_only_padding_size =
@@ -650,12 +660,14 @@ impl<'a> ContractFile<'a> {
         let Some(read_only_file_target_bytes) =
             contract_memory.split_off_mut(..self.read_only_section_file_size as usize)
         else {
-            trace!(
-                %contract_memory_input_size,
-                contract_memory_size = %self.contract_memory_size(),
-                read_only_section_file_size = self.read_only_section_file_size,
-                "Not enough bytes to write read-only section from the file"
-            );
+            // TODO: Un-comment logging once it is working:
+            //  https://github.com/rust-lang/rust/issues/157152
+            // trace!(
+            //     %contract_memory_input_size,
+            //     contract_memory_size = %self.contract_memory_size(),
+            //     read_only_section_file_size = self.read_only_section_file_size,
+            //     "Not enough bytes to write read-only section from the file"
+            // );
 
             return false;
         };
@@ -669,14 +681,16 @@ impl<'a> ContractFile<'a> {
         let Some(read_only_padding_bytes) =
             contract_memory.split_off_mut(..read_only_padding_size as usize)
         else {
-            trace!(
-                %contract_memory_input_size,
-                contract_memory_size = %self.contract_memory_size(),
-                read_only_section_file_size = self.read_only_section_file_size,
-                read_only_section_memory_size = self.read_only_section_memory_size,
-                %read_only_padding_size,
-                "Not enough bytes to write read-only padding section"
-            );
+            // TODO: Un-comment logging once it is working:
+            //  https://github.com/rust-lang/rust/issues/157152
+            // trace!(
+            //     %contract_memory_input_size,
+            //     contract_memory_size = %self.contract_memory_size(),
+            //     read_only_section_file_size = self.read_only_section_file_size,
+            //     read_only_section_memory_size = self.read_only_section_memory_size,
+            //     %read_only_padding_size,
+            //     "Not enough bytes to write read-only padding section"
+            // );
 
             return false;
         };
@@ -685,15 +699,17 @@ impl<'a> ContractFile<'a> {
         read_only_padding_bytes.write_filled(0);
 
         if code_source_bytes.len() != contract_memory.len() {
-            trace!(
-                %contract_memory_input_size,
-                contract_memory_size = %self.contract_memory_size(),
-                read_only_section_file_size = self.read_only_section_file_size,
-                read_only_section_memory_size = self.read_only_section_memory_size,
-                %read_only_padding_size,
-                code_size = %code_source_bytes.len(),
-                "Not enough bytes to write code section from the file"
-            );
+            // TODO: Un-comment logging once it is working:
+            //  https://github.com/rust-lang/rust/issues/157152
+            // trace!(
+            //     %contract_memory_input_size,
+            //     contract_memory_size = %self.contract_memory_size(),
+            //     read_only_section_file_size = self.read_only_section_file_size,
+            //     read_only_section_memory_size = self.read_only_section_memory_size,
+            //     %read_only_padding_size,
+            //     code_size = %code_source_bytes.len(),
+            //     "Not enough bytes to write code section from the file"
+            // );
 
             return false;
         }

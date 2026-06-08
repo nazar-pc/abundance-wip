@@ -1,4 +1,18 @@
 #![cfg_attr(target_env = "abundance", no_std)]
+#![cfg_attr(
+    not(target_env = "abundance"),
+    expect(incomplete_features, reason = "generic_const_*")
+)]
+#![cfg_attr(
+    not(target_env = "abundance"),
+    feature(
+        inherent_associated_types,
+        integer_widen_truncate,
+        generic_const_args,
+        macroless_generic_const_args,
+        min_generic_const_args
+    )
+)]
 
 #[cfg(not(target_env = "abundance"))]
 pub mod host_utils;
