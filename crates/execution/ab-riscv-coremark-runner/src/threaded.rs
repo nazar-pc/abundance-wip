@@ -41,7 +41,12 @@ pub(crate) enum Stop {
     OutOfBounds,
     /// Jump to an invalid or unaligned address
     BadJump,
-    /// Instruction not implemented by this prototype
+    /// Illegal or unimplemented instruction
+    IllegalInstruction,
+    /// CSR access this runner does not implement
+    UnsupportedCsr(u16),
+    /// Discriminant that never appeared in the decoded stream, so no handler was installed for
+    /// it. Only reachable if the stream is modified after [`Ctx::new()`].
     Unsupported(u16),
 }
 
@@ -143,6 +148,31 @@ macro_rules! mem_write {
     }};
 }
 
+/// Read of the `time` CSR into `$rd`, provided the access really is a pure read of it
+macro_rules! csr_read {
+    ($ctx:ident, $rd:expr, $csr_index:expr, $write_operand:expr) => {{
+        const CSR_TIME: u16 = 0xC01;
+
+        // `time` is read-only, so a set/clear with a non-zero operand is an attempted write
+        if $csr_index != CSR_TIME || $write_operand != 0 {
+            cold_path();
+            $ctx.stop = Stop::UnsupportedCsr($csr_index);
+            return core::ptr::null();
+        }
+
+        let elapsed = $ctx.start.elapsed().as_nanos() as u64;
+        reg_write!($ctx, $rd, elapsed);
+    }};
+}
+
+macro_rules! csr_illegal {
+    ($ctx:ident) => {{
+        cold_path();
+        $ctx.stop = Stop::UnsupportedCsr(0);
+        return core::ptr::null();
+    }};
+}
+
 /// Guest address of the instruction `$ip` points at.
 ///
 /// Every two bytes of guest code get one slot in the decoded stream, hence the shift by two rather
@@ -215,26 +245,41 @@ macro_rules! jump_absolute {
 
 /// The instruction table.
 ///
-/// Each entry is `Variant, slots, { bound fields }, body`, where `slots` is how many slots of the
-/// decoded stream the instruction occupies (one per two guest bytes) and `body` is a block that
-/// evaluates to the instruction pointer to continue at. Bodies may use `ctx`, `ip` and `next`, the
-/// last being `ip` already advanced past this instruction.
+/// Each entry is `Variant, slots, { bound fields }, body`, where `body` is a block that evaluates
+/// to the instruction pointer to continue at. Bodies may use `ctx`, `ip` and `next`, the last
+/// being `ip` already advanced past this instruction.
+///
+/// This table is exhaustive over `CoremarkInstruction`, deliberately: there is no catch-all arm,
+/// so adding an extension to the enum fails to compile here instead of trapping at run time.
 macro_rules! ops {
     ($emit:ident) => {
         $emit! {
             ctx, ip, next,
-            // ----- RV64I register-register -----
+            // Listed in `CoremarkInstruction` declaration order so that this table can be checked
+            // against the generated enum definition. `slots` is how many slots of the decoded
+            // stream the instruction occupies: one per two guest bytes, so two for a 32-bit
+            // instruction and one for a compressed one.
+
+            // ----- RV64I, register-register -----
             Add, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1).wrapping_add(reg_read!(ctx, rs2))); next };
             Sub, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1).wrapping_sub(reg_read!(ctx, rs2))); next };
+            Sll, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1) << (reg_read!(ctx, rs2) & 0x3f)); next };
             Slt, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, u64::from(reg_read!(ctx, rs1).cast_signed() < reg_read!(ctx, rs2).cast_signed())); next };
+            Sltu, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, u64::from(reg_read!(ctx, rs1) < reg_read!(ctx, rs2))); next };
             Xor, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1) ^ reg_read!(ctx, rs2)); next };
+            Srl, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1) >> (reg_read!(ctx, rs2) & 0x3f)); next };
+            Sra, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, (reg_read!(ctx, rs1).cast_signed() >> (reg_read!(ctx, rs2) & 0x3f)).cast_unsigned()); next };
             Or, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1) | reg_read!(ctx, rs2)); next };
+            And, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1) & reg_read!(ctx, rs2)); next };
             Addw, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, i64::from((reg_read!(ctx, rs1) as i32).wrapping_add(reg_read!(ctx, rs2) as i32)).cast_unsigned()); next };
             Subw, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, i64::from((reg_read!(ctx, rs1) as i32).wrapping_sub(reg_read!(ctx, rs2) as i32)).cast_unsigned()); next };
+            Sllw, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, i64::from((((reg_read!(ctx, rs1) as u32) << (reg_read!(ctx, rs2) & 0x1f))).cast_signed()).cast_unsigned()); next };
+            Srlw, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, i64::from((((reg_read!(ctx, rs1) as u32) >> (reg_read!(ctx, rs2) & 0x1f))).cast_signed()).cast_unsigned()); next };
+            Sraw, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, i64::from((reg_read!(ctx, rs1) as i32) >> (reg_read!(ctx, rs2) & 0x1f)).cast_unsigned()); next };
 
-            // ----- RV64I register-immediate -----
+            // ----- RV64I, register-immediate -----
             Addi, 2, { rs1, rd, imm }, { reg_write!(ctx, rd, reg_read!(ctx, rs1).wrapping_add(i64::from(imm).cast_unsigned())); next };
-            Addiw, 2, { rs1, rd, imm }, { reg_write!(ctx, rd, i64::from((reg_read!(ctx, rs1) as i32).wrapping_add(i32::from(imm))).cast_unsigned()); next };
+            Slti, 2, { rs1, rd, imm }, { reg_write!(ctx, rd, u64::from(reg_read!(ctx, rs1).cast_signed() < i64::from(imm))); next };
             Sltiu, 2, { rs1, rd, imm }, { reg_write!(ctx, rd, u64::from(reg_read!(ctx, rs1) < i64::from(imm).cast_unsigned())); next };
             Xori, 2, { rs1, rd, imm }, { reg_write!(ctx, rd, reg_read!(ctx, rs1) ^ i64::from(imm).cast_unsigned()); next };
             Ori, 2, { rs1, rd, imm }, { reg_write!(ctx, rd, reg_read!(ctx, rs1) | i64::from(imm).cast_unsigned()); next };
@@ -242,58 +287,109 @@ macro_rules! ops {
             Slli, 2, { rs1, rd, shamt }, { reg_write!(ctx, rd, reg_read!(ctx, rs1) << shamt); next };
             Srli, 2, { rs1, rd, shamt }, { reg_write!(ctx, rd, reg_read!(ctx, rs1) >> shamt); next };
             Srai, 2, { rs1, rd, shamt }, { reg_write!(ctx, rd, (reg_read!(ctx, rs1).cast_signed() >> shamt).cast_unsigned()); next };
+            Addiw, 2, { rs1, rd, imm }, { reg_write!(ctx, rd, i64::from((reg_read!(ctx, rs1) as i32).wrapping_add(i32::from(imm))).cast_unsigned()); next };
             Slliw, 2, { rs1, rd, shamt }, { reg_write!(ctx, rd, i64::from(((reg_read!(ctx, rs1) as u32) << shamt).cast_signed()).cast_unsigned()); next };
             Srliw, 2, { rs1, rd, shamt }, { reg_write!(ctx, rd, i64::from(((reg_read!(ctx, rs1) as u32) >> shamt).cast_signed()).cast_unsigned()); next };
             Sraiw, 2, { rs1, rd, shamt }, { reg_write!(ctx, rd, i64::from((reg_read!(ctx, rs1) as i32) >> shamt).cast_unsigned()); next };
-            Lui, 2, { rd, imm }, { reg_write!(ctx, rd, i64::from(imm).cast_unsigned()); next };
-            Auipc, 2, { rd, imm }, { let pc = current_pc!(ctx, ip); reg_write!(ctx, rd, pc.wrapping_add(i64::from(imm).cast_unsigned())); next };
 
-            // ----- RV64I loads and stores -----
+            // ----- RV64I, loads -----
+            Lb, 2, { rs1, rd, imm }, { let a = reg_read!(ctx, rs1).wrapping_add(i64::from(imm).cast_unsigned()); let v = mem_read!(ctx, i8, a); reg_write!(ctx, rd, i64::from(v).cast_unsigned()); next };
             Lh, 2, { rs1, rd, imm }, { let a = reg_read!(ctx, rs1).wrapping_add(i64::from(imm).cast_unsigned()); let v = mem_read!(ctx, i16, a); reg_write!(ctx, rd, i64::from(v).cast_unsigned()); next };
             Lw, 2, { rs1, rd, imm }, { let a = reg_read!(ctx, rs1).wrapping_add(i64::from(imm).cast_unsigned()); let v = mem_read!(ctx, i32, a); reg_write!(ctx, rd, i64::from(v).cast_unsigned()); next };
             Ld, 2, { rs1, rd, imm }, { let a = reg_read!(ctx, rs1).wrapping_add(i64::from(imm).cast_unsigned()); let v = mem_read!(ctx, u64, a); reg_write!(ctx, rd, v); next };
             Lbu, 2, { rs1, rd, imm }, { let a = reg_read!(ctx, rs1).wrapping_add(i64::from(imm).cast_unsigned()); let v = mem_read!(ctx, u8, a); reg_write!(ctx, rd, u64::from(v)); next };
             Lhu, 2, { rs1, rd, imm }, { let a = reg_read!(ctx, rs1).wrapping_add(i64::from(imm).cast_unsigned()); let v = mem_read!(ctx, u16, a); reg_write!(ctx, rd, u64::from(v)); next };
             Lwu, 2, { rs1, rd, imm }, { let a = reg_read!(ctx, rs1).wrapping_add(i64::from(imm).cast_unsigned()); let v = mem_read!(ctx, u32, a); reg_write!(ctx, rd, u64::from(v)); next };
+
+            // ----- RV64I, indirect jump -----
+            Jalr, 2, { rs1, rd, imm }, { let pc = current_pc!(ctx, ip); let target = reg_read!(ctx, rs1).wrapping_add(i64::from(imm).cast_unsigned()) & !1u64; reg_write!(ctx, rd, pc.wrapping_add(size_of::<u32>() as u64)); jump_absolute!(ctx, target) };
+
+            // ----- RV64I, stores -----
             Sb, 2, { rs1, rs2, imm }, { let a = reg_read!(ctx, rs1).wrapping_add(i64::from(imm).cast_unsigned()); mem_write!(ctx, u8, a, reg_read!(ctx, rs2) as u8); next };
             Sh, 2, { rs1, rs2, imm }, { let a = reg_read!(ctx, rs1).wrapping_add(i64::from(imm).cast_unsigned()); mem_write!(ctx, u16, a, reg_read!(ctx, rs2) as u16); next };
             Sw, 2, { rs1, rs2, imm }, { let a = reg_read!(ctx, rs1).wrapping_add(i64::from(imm).cast_unsigned()); mem_write!(ctx, u32, a, reg_read!(ctx, rs2) as u32); next };
             Sd, 2, { rs1, rs2, imm }, { let a = reg_read!(ctx, rs1).wrapping_add(i64::from(imm).cast_unsigned()); mem_write!(ctx, u64, a, reg_read!(ctx, rs2)); next };
 
-            // ----- RV64I control flow -----
+            // ----- RV64I, branches -----
             Beq, 2, { rs1, rs2, imm }, { if reg_read!(ctx, rs1) == reg_read!(ctx, rs2) { jump_relative!(ctx, ip, imm) } else { next } };
             Bne, 2, { rs1, rs2, imm }, { if reg_read!(ctx, rs1) != reg_read!(ctx, rs2) { jump_relative!(ctx, ip, imm) } else { next } };
             Blt, 2, { rs1, rs2, imm }, { if reg_read!(ctx, rs1).cast_signed() < reg_read!(ctx, rs2).cast_signed() { jump_relative!(ctx, ip, imm) } else { next } };
             Bge, 2, { rs1, rs2, imm }, { if reg_read!(ctx, rs1).cast_signed() >= reg_read!(ctx, rs2).cast_signed() { jump_relative!(ctx, ip, imm) } else { next } };
             Bltu, 2, { rs1, rs2, imm }, { if reg_read!(ctx, rs1) < reg_read!(ctx, rs2) { jump_relative!(ctx, ip, imm) } else { next } };
             Bgeu, 2, { rs1, rs2, imm }, { if reg_read!(ctx, rs1) >= reg_read!(ctx, rs2) { jump_relative!(ctx, ip, imm) } else { next } };
+
+            // ----- RV64I, upper immediate and direct jump -----
+            Lui, 2, { rd, imm }, { reg_write!(ctx, rd, i64::from(imm).cast_unsigned()); next };
+            Auipc, 2, { rd, imm }, { let pc = current_pc!(ctx, ip); reg_write!(ctx, rd, pc.wrapping_add(i64::from(imm).cast_unsigned())); next };
             Jal, 2, { rd, imm }, { let pc = current_pc!(ctx, ip); reg_write!(ctx, rd, pc.wrapping_add(size_of::<u32>() as u64)); jump_relative!(ctx, ip, imm) };
-            Jalr, 2, { rs1, rd, imm }, { let pc = current_pc!(ctx, ip); let t = reg_read!(ctx, rs1).wrapping_add(i64::from(imm).cast_unsigned()) & !1u64; reg_write!(ctx, rd, pc.wrapping_add(size_of::<u32>() as u64)); jump_absolute!(ctx, t) };
+
+            // ----- RV64I, system -----
+            Fence, 2, { }, { next };
+            FenceTso, 2, { }, { next };
+            Ecall, 2, { }, { cold_path(); ctx.stop = Stop::IllegalInstruction; return core::ptr::null(); };
+            Ebreak, 2, { }, { next };
+            Unimp, 2, { }, { cold_path(); ctx.stop = Stop::IllegalInstruction; return core::ptr::null(); };
 
             // ----- M -----
             Mul, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1).wrapping_mul(reg_read!(ctx, rs2))); next };
-            Mulw, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, i64::from((reg_read!(ctx, rs1) as i32).wrapping_mul(reg_read!(ctx, rs2) as i32)).cast_unsigned()); next };
+            Mulh, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, ((i128::from(reg_read!(ctx, rs1).cast_signed()) * i128::from(reg_read!(ctx, rs2).cast_signed())) >> 64) as u64); next };
+            Mulhsu, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, ((i128::from(reg_read!(ctx, rs1).cast_signed()) * i128::from(reg_read!(ctx, rs2))) >> 64) as u64); next };
             Mulhu, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, ((u128::from(reg_read!(ctx, rs1)) * u128::from(reg_read!(ctx, rs2))) >> 64) as u64); next };
-            Divu, 2, { rs1, rs2, rd }, { let b = reg_read!(ctx, rs2); reg_write!(ctx, rd, if b == 0 { u64::MAX } else { reg_read!(ctx, rs1) / b }); next };
-            Divuw, 2, { rs1, rs2, rd }, { let b = reg_read!(ctx, rs2) as u32; let v = if b == 0 { u32::MAX } else { (reg_read!(ctx, rs1) as u32) / b }; reg_write!(ctx, rd, i64::from(v.cast_signed()).cast_unsigned()); next };
+            Div, 2, { rs1, rs2, rd }, { let a = reg_read!(ctx, rs1).cast_signed(); let b = reg_read!(ctx, rs2).cast_signed(); let v = if b == 0 { -1i64 } else if a == i64::MIN && b == -1 { i64::MIN } else { a / b }; reg_write!(ctx, rd, v.cast_unsigned()); next };
+            Divu, 2, { rs1, rs2, rd }, { let b = reg_read!(ctx, rs2); reg_write!(ctx, rd, reg_read!(ctx, rs1).checked_div(b).unwrap_or(u64::MAX)); next };
+            Rem, 2, { rs1, rs2, rd }, { let a = reg_read!(ctx, rs1).cast_signed(); let b = reg_read!(ctx, rs2).cast_signed(); let v = if b == 0 { a } else if a == i64::MIN && b == -1 { 0 } else { a % b }; reg_write!(ctx, rd, v.cast_unsigned()); next };
+            Remu, 2, { rs1, rs2, rd }, { let a = reg_read!(ctx, rs1); let b = reg_read!(ctx, rs2); reg_write!(ctx, rd, if b == 0 { a } else { a % b }); next };
+            Mulw, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, i64::from((reg_read!(ctx, rs1) as i32).wrapping_mul(reg_read!(ctx, rs2) as i32)).cast_unsigned()); next };
+            Divw, 2, { rs1, rs2, rd }, { let a = reg_read!(ctx, rs1) as i32; let b = reg_read!(ctx, rs2) as i32; let v = if b == 0 { -1i64 } else if a == i32::MIN && b == -1 { i64::from(i32::MIN) } else { i64::from(a / b) }; reg_write!(ctx, rd, v.cast_unsigned()); next };
+            Divuw, 2, { rs1, rs2, rd }, { let a = reg_read!(ctx, rs1) as u32; let b = reg_read!(ctx, rs2) as u32; let v = match a.checked_div(b) { Some(v) => i64::from(v.cast_signed()).cast_unsigned(), None => u64::MAX }; reg_write!(ctx, rd, v); next };
+            Remw, 2, { rs1, rs2, rd }, { let a = reg_read!(ctx, rs1) as i32; let b = reg_read!(ctx, rs2) as i32; let v = if b == 0 { i64::from(a) } else if a == i32::MIN && b == -1 { 0 } else { i64::from(a % b) }; reg_write!(ctx, rd, v.cast_unsigned()); next };
+            Remuw, 2, { rs1, rs2, rd }, { let a = reg_read!(ctx, rs1) as u32; let b = reg_read!(ctx, rs2) as u32; let v = if b == 0 { a.cast_signed() } else { (a % b).cast_signed() }; reg_write!(ctx, rd, i64::from(v).cast_unsigned()); next };
 
-            // ----- B -----
-            Sh1add, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, (reg_read!(ctx, rs1) << 1).wrapping_add(reg_read!(ctx, rs2))); next };
-            Sh2add, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, (reg_read!(ctx, rs1) << 2).wrapping_add(reg_read!(ctx, rs2))); next };
-            Sh3add, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, (reg_read!(ctx, rs1) << 3).wrapping_add(reg_read!(ctx, rs2))); next };
-            Sh1addUw, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, (u64::from(reg_read!(ctx, rs1) as u32) << 1).wrapping_add(reg_read!(ctx, rs2))); next };
-            Sh2addUw, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, (u64::from(reg_read!(ctx, rs1) as u32) << 2).wrapping_add(reg_read!(ctx, rs2))); next };
+            // ----- Zba -----
             AddUw, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, u64::from(reg_read!(ctx, rs1) as u32).wrapping_add(reg_read!(ctx, rs2))); next };
+            Sh1add, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, (reg_read!(ctx, rs1) << 1).wrapping_add(reg_read!(ctx, rs2))); next };
+            Sh1addUw, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, (u64::from(reg_read!(ctx, rs1) as u32) << 1).wrapping_add(reg_read!(ctx, rs2))); next };
+            Sh2add, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, (reg_read!(ctx, rs1) << 2).wrapping_add(reg_read!(ctx, rs2))); next };
+            Sh2addUw, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, (u64::from(reg_read!(ctx, rs1) as u32) << 2).wrapping_add(reg_read!(ctx, rs2))); next };
+            Sh3add, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, (reg_read!(ctx, rs1) << 3).wrapping_add(reg_read!(ctx, rs2))); next };
+            Sh3addUw, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, (u64::from(reg_read!(ctx, rs1) as u32) << 3).wrapping_add(reg_read!(ctx, rs2))); next };
             SlliUw, 2, { rs1, rd, shamt }, { reg_write!(ctx, rd, u64::from(reg_read!(ctx, rs1) as u32) << shamt); next };
+
+            // ----- Zbb -----
+            Andn, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1) & !reg_read!(ctx, rs2)); next };
+            Orn, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1) | !reg_read!(ctx, rs2)); next };
+            Xnor, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, !(reg_read!(ctx, rs1) ^ reg_read!(ctx, rs2))); next };
+            Clz, 2, { rs1, rd }, { reg_write!(ctx, rd, u64::from(reg_read!(ctx, rs1).leading_zeros())); next };
+            Clzw, 2, { rs1, rd }, { reg_write!(ctx, rd, u64::from((reg_read!(ctx, rs1) as u32).leading_zeros())); next };
+            Ctz, 2, { rs1, rd }, { reg_write!(ctx, rd, u64::from(reg_read!(ctx, rs1).trailing_zeros())); next };
+            Ctzw, 2, { rs1, rd }, { reg_write!(ctx, rd, u64::from((reg_read!(ctx, rs1) as u32).trailing_zeros())); next };
+            Cpop, 2, { rs1, rd }, { reg_write!(ctx, rd, u64::from(reg_read!(ctx, rs1).count_ones())); next };
+            Cpopw, 2, { rs1, rd }, { reg_write!(ctx, rd, u64::from((reg_read!(ctx, rs1) as u32).count_ones())); next };
+            Max, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1).cast_signed().max(reg_read!(ctx, rs2).cast_signed()).cast_unsigned()); next };
+            Maxu, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1).max(reg_read!(ctx, rs2))); next };
+            Min, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1).cast_signed().min(reg_read!(ctx, rs2).cast_signed()).cast_unsigned()); next };
+            Minu, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1).min(reg_read!(ctx, rs2))); next };
+            Sextb, 2, { rs1, rd }, { reg_write!(ctx, rd, i64::from(reg_read!(ctx, rs1) as i8).cast_unsigned()); next };
             Sexth, 2, { rs1, rd }, { reg_write!(ctx, rd, i64::from(reg_read!(ctx, rs1) as i16).cast_unsigned()); next };
             Zexth, 2, { rs1, rd }, { reg_write!(ctx, rd, u64::from(reg_read!(ctx, rs1) as u16)); next };
-            Max, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1).cast_signed().max(reg_read!(ctx, rs2).cast_signed()).cast_unsigned()); next };
-            Min, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1).cast_signed().min(reg_read!(ctx, rs2).cast_signed()).cast_unsigned()); next };
-            Maxu, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1).max(reg_read!(ctx, rs2))); next };
-            Bexti, 2, { rs1, rd, shamt }, { reg_write!(ctx, rd, (reg_read!(ctx, rs1) >> shamt) & 1); next };
+            Rol, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1).rotate_left((reg_read!(ctx, rs2) & 0x3f) as u32)); next };
+            Rolw, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, i64::from((reg_read!(ctx, rs1) as u32).rotate_left((reg_read!(ctx, rs2) & 0x1f) as u32).cast_signed()).cast_unsigned()); next };
+            Ror, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1).rotate_right((reg_read!(ctx, rs2) & 0x3f) as u32)); next };
+            Rori, 2, { rs1, rd, shamt }, { reg_write!(ctx, rd, reg_read!(ctx, rs1).rotate_right(u32::from(shamt & 0x3f))); next };
+            Roriw, 2, { rs1, rd, shamt }, { reg_write!(ctx, rd, i64::from((reg_read!(ctx, rs1) as u32).rotate_right(u32::from(shamt & 0x1f)).cast_signed()).cast_unsigned()); next };
+            Rorw, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, i64::from((reg_read!(ctx, rs1) as u32).rotate_right((reg_read!(ctx, rs2) & 0x1f) as u32).cast_signed()).cast_unsigned()); next };
+            Orcb, 2, { rs1, rd }, { reg_write!(ctx, rd, rv64_zbb_helpers::orc_b(reg_read!(ctx, rs1))); next };
+            Rev8, 2, { rs1, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1).swap_bytes()); next };
 
-            // ----- Zicsr (only `time` is ever read by Coremark) -----
-            Csrrs, 2, { rd, csr_index }, { let v = if csr_index == 0xC01 { ctx.start.elapsed().as_nanos() as u64 } else { 0 }; reg_write!(ctx, rd, v); next };
+            // ----- Zbs -----
+            Bset, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1) | (1u64 << (reg_read!(ctx, rs2) & 0x3f))); next };
+            Bseti, 2, { rs1, rd, shamt }, { reg_write!(ctx, rd, reg_read!(ctx, rs1) | (1u64 << shamt)); next };
+            Bclr, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1) & !(1u64 << (reg_read!(ctx, rs2) & 0x3f))); next };
+            Bclri, 2, { rs1, rd, shamt }, { reg_write!(ctx, rd, reg_read!(ctx, rs1) & !(1u64 << shamt)); next };
+            Binv, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1) ^ (1u64 << (reg_read!(ctx, rs2) & 0x3f))); next };
+            Binvi, 2, { rs1, rd, shamt }, { reg_write!(ctx, rd, reg_read!(ctx, rs1) ^ (1u64 << shamt)); next };
+            Bext, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, (reg_read!(ctx, rs1) >> (reg_read!(ctx, rs2) & 0x3f)) & 1); next };
+            Bexti, 2, { rs1, rd, shamt }, { reg_write!(ctx, rd, (reg_read!(ctx, rs1) >> shamt) & 1); next };
 
             // ----- Zca, quadrant 0 -----
             CAddi4spn, 1, { rd, nzuimm }, { reg_write!(ctx, rd, reg_read!(ctx, R::Sp).wrapping_add(u64::from(nzuimm))); next };
@@ -303,6 +399,7 @@ macro_rules! ops {
             CSd, 1, { rs1, rs2, uimm }, { let a = reg_read!(ctx, rs1).wrapping_add(u64::from(uimm)); mem_write!(ctx, u64, a, reg_read!(ctx, rs2)); next };
 
             // ----- Zca, quadrant 1 -----
+            CNop, 1, { }, { next };
             CAddi, 1, { rd, nzimm }, { reg_write!(ctx, rd, reg_read!(ctx, rd).wrapping_add(i64::from(nzimm).cast_unsigned())); next };
             CAddiw, 1, { rd, imm }, { reg_write!(ctx, rd, i64::from((reg_read!(ctx, rd) as i32).wrapping_add(i32::from(imm))).cast_unsigned()); next };
             CLi, 1, { rd, imm }, { reg_write!(ctx, rd, i64::from(imm).cast_unsigned()); next };
@@ -326,11 +423,24 @@ macro_rules! ops {
             CLwsp, 1, { rd, uimm }, { let a = reg_read!(ctx, R::Sp).wrapping_add(u64::from(uimm)); let v = mem_read!(ctx, i32, a); reg_write!(ctx, rd, i64::from(v).cast_unsigned()); next };
             CLdsp, 1, { rd, uimm }, { let a = reg_read!(ctx, R::Sp).wrapping_add(u64::from(uimm)); let v = mem_read!(ctx, u64, a); reg_write!(ctx, rd, v); next };
             CJr, 1, { rs1 }, { jump_absolute!(ctx, reg_read!(ctx, rs1) & !1u64) };
-            CJalr, 1, { rs1 }, { let pc = current_pc!(ctx, ip); let t = reg_read!(ctx, rs1) & !1u64; reg_write!(ctx, R::Ra, pc.wrapping_add(size_of::<u16>() as u64)); jump_absolute!(ctx, t) };
             CMv, 1, { rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs2)); next };
+            CEbreak, 1, { }, { next };
+            CJalr, 1, { rs1 }, { let pc = current_pc!(ctx, ip); let target = reg_read!(ctx, rs1) & !1u64; reg_write!(ctx, R::Ra, pc.wrapping_add(size_of::<u16>() as u64)); jump_absolute!(ctx, target) };
             CAdd, 1, { rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rd).wrapping_add(reg_read!(ctx, rs2))); next };
             CSwsp, 1, { rs2, uimm }, { let a = reg_read!(ctx, R::Sp).wrapping_add(u64::from(uimm)); mem_write!(ctx, u32, a, reg_read!(ctx, rs2) as u32); next };
             CSdsp, 1, { rs2, uimm }, { let a = reg_read!(ctx, R::Sp).wrapping_add(u64::from(uimm)); mem_write!(ctx, u64, a, reg_read!(ctx, rs2)); next };
+            CUnimp, 1, { }, { cold_path(); ctx.stop = Stop::IllegalInstruction; return core::ptr::null(); };
+
+            // ----- Zicsr -----
+            //
+            // The only CSR this runner implements is `time`, and it is read-only, so anything but
+            // a pure read of it stops execution rather than quietly returning a wrong value.
+            Csrrw, 2, { }, { csr_illegal!(ctx) };
+            Csrrs, 2, { rs1, rd, csr_index }, { csr_read!(ctx, rd, csr_index, reg_read!(ctx, rs1)); next };
+            Csrrc, 2, { rs1, rd, csr_index }, { csr_read!(ctx, rd, csr_index, reg_read!(ctx, rs1)); next };
+            Csrrwi, 2, { }, { csr_illegal!(ctx) };
+            Csrrsi, 2, { rd, zimm, csr_index }, { csr_read!(ctx, rd, csr_index, u64::from(zimm)); next };
+            Csrrci, 2, { rd, zimm, csr_index }, { csr_read!(ctx, rd, csr_index, u64::from(zimm)); next };
         }
     };
 }
@@ -351,7 +461,9 @@ macro_rules! emit_match {
                     $(
                         #[allow(
                             unused_variables,
-                            reason = "Unconditional jumps do not use the advanced pointer"
+                            unreachable_code,
+                            reason = "Unconditional jumps do not use the advanced pointer, and \
+                                trapping instructions never reach it"
                         )]
                         I::$name { $($field,)* .. } => {
                             // SAFETY: the stream ends with a jump, so advancing stays in bounds
@@ -359,12 +471,6 @@ macro_rules! emit_match {
                             $ip = $body;
                         }
                     )*
-                    _ => {
-                        cold_path();
-                        // SAFETY: `ip` points at a valid instruction
-                        $ctx.stop = Stop::Unsupported(unsafe { discriminant($ip) });
-                        return core::ptr::null();
-                    }
                 }
             }
         }
@@ -389,7 +495,9 @@ macro_rules! emit_handlers {
                 #[expect(non_snake_case, reason = "One handler per instruction variant")]
                 #[allow(
                     unused_variables,
-                    reason = "Unconditional jumps do not use the advanced pointer"
+                    unreachable_code,
+                    reason = "Unconditional jumps do not use the advanced pointer, and trapping \
+                        instructions never reach it"
                 )]
                 pub(super) fn $name($ip: *const I, $ctx: &mut Ctx) -> Next {
                     // SAFETY: `ip` points at a slot holding exactly this variant, which is how
@@ -404,6 +512,8 @@ macro_rules! emit_handlers {
                 }
             )*
 
+            /// Filler for discriminants that never appear in the decoded stream, so that the
+            /// dispatch table is fully initialized before it is populated from the program
             pub(super) fn unsupported(ip: *const I, ctx: &mut Ctx) -> Next {
                 cold_path();
                 // SAFETY: `ip` points at a valid instruction
@@ -416,7 +526,6 @@ macro_rules! emit_handlers {
         fn handler_for(instruction: I) -> Handler {
             match instruction {
                 $( I::$name { .. } => handlers::$name as Handler, )*
-                _ => handlers::unsupported as Handler,
             }
         }
     };
@@ -436,7 +545,9 @@ macro_rules! emit_tail_handlers {
                 #[expect(non_snake_case, reason = "One handler per instruction variant")]
                 #[allow(
                     unused_variables,
-                    reason = "Unconditional jumps do not use the advanced pointer"
+                    unreachable_code,
+                    reason = "Unconditional jumps do not use the advanced pointer, and trapping \
+                        instructions never reach it"
                 )]
                 pub(super) fn $name($ip: *const I, $ctx: &mut Ctx) -> Next {
                     // SAFETY: `ip` points at a slot holding exactly this variant, which is how
@@ -455,19 +566,12 @@ macro_rules! emit_tail_handlers {
                 }
             )*
 
-            pub(super) fn unsupported(ip: *const I, ctx: &mut Ctx) -> Next {
-                cold_path();
-                // SAFETY: `ip` points at a valid instruction
-                ctx.stop = Stop::Unsupported(unsafe { discriminant(ip) });
-                core::ptr::null()
-            }
         }
 
         /// Pick the tail-calling handler for an already decoded instruction
         fn tail_handler_for(instruction: I) -> Handler {
             match instruction {
                 $( I::$name { .. } => tail_handlers::$name as Handler, )*
-                _ => tail_handlers::unsupported as Handler,
             }
         }
     };
@@ -485,7 +589,9 @@ macro_rules! emit_plain_tail_handlers {
                 #[expect(non_snake_case, reason = "One handler per instruction variant")]
                 #[allow(
                     unused_variables,
-                    reason = "Unconditional jumps do not use the advanced pointer"
+                    unreachable_code,
+                    reason = "Unconditional jumps do not use the advanced pointer, and trapping \
+                        instructions never reach it"
                 )]
                 pub(super) fn $name($ip: *const I, $ctx: &mut Ctx) -> Next {
                     // SAFETY: `ip` points at a slot holding exactly this variant, which is how
@@ -505,20 +611,12 @@ macro_rules! emit_plain_tail_handlers {
                     handler($next, $ctx)
                 }
             )*
-
-            pub(super) fn unsupported(ip: *const I, ctx: &mut Ctx) -> Next {
-                cold_path();
-                // SAFETY: `ip` points at a valid instruction
-                ctx.stop = Stop::Unsupported(unsafe { discriminant(ip) });
-                core::ptr::null()
-            }
         }
 
         /// Pick the plain-call handler for an already decoded instruction
         fn plain_tail_handler_for(instruction: I) -> Handler {
             match instruction {
                 $( I::$name { .. } => plain_tail_handlers::$name as Handler, )*
-                _ => plain_tail_handlers::unsupported as Handler,
             }
         }
     };
