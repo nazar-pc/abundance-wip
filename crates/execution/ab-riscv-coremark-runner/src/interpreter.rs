@@ -269,6 +269,12 @@ where
 }
 
 impl EagerInstructionFetcher {
+    /// Decoded instruction stream
+    #[inline(always)]
+    pub(crate) fn instructions(&self) -> &[CoremarkInstruction] {
+        &self.instructions
+    }
+
     /// Create a new instance with the specified instructions and base address.
     ///
     /// `return_trap_address` is the address at which the interpreter will stop execution
