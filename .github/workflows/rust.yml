@@ -132,7 +132,7 @@ jobs:
             if: contains(matrix.target, 'riscv64')
 
           - name: Install wild-linker
-            uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf # 2.85.5
+            uses: taiki-e/install-action@cb33e69fad06166ca28a42b2575e4dadabf62ee8 # 2.85.8
             with:
               tool: wild-linker
             if: runner.os == 'Linux' && matrix.target == ''
@@ -323,7 +323,7 @@ jobs:
 
     steps: &test-steps
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf # 2.85.5
+        uses: taiki-e/install-action@cb33e69fad06166ca28a42b2575e4dadabf62ee8 # 2.85.8
         with:
           tool: cargo-nextest
 
