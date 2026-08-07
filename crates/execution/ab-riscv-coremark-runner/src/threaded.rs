@@ -8,13 +8,16 @@
 //! * [`run_call`] — one function per instruction, reached through a function pointer table, called
 //!   from a driver loop
 //! * [`run_tail`] — the same functions, chained with guaranteed tail calls (`become`)
+//! * [`run_plain_tail`] — the same again, but with an ordinary call in tail position, to check
+//!   whether the unstable `explicit_tail_calls` feature is actually needed to get sibling calls
 //!
 //! All three do far less work per instruction than the generic `BasicInterpreterState::execute()`
 //! loop, because each instruction knows statically how wide it is, which operands it actually
 //! needs, and whether it can branch at all. The generic loop cannot know any of that, so it pays
 //! for the union of what every instruction might need before it dispatches.
 //!
-//! Select one with `COREMARK_DISPATCH=match|call|tail`; leaving it unset runs the generic loop.
+//! Select one with `COREMARK_DISPATCH=match|call|tail|plaintail`; leaving it unset runs the
+//! generic loop.
 
 use crate::instruction::CoremarkInstruction as I;
 use ab_riscv_interpreter::basic::BasicRegister;
@@ -470,6 +473,59 @@ macro_rules! emit_tail_handlers {
     };
 }
 
+macro_rules! emit_plain_tail_handlers {
+    (
+        $ctx:ident, $ip:ident, $next:ident,
+        $($name:ident, $slots:expr, { $($field:ident),* $(,)? }, $body:block);* $(;)?
+    ) => {
+        mod plain_tail_handlers {
+            use super::*;
+
+            $(
+                #[expect(non_snake_case, reason = "One handler per instruction variant")]
+                #[allow(
+                    unused_variables,
+                    reason = "Unconditional jumps do not use the advanced pointer"
+                )]
+                pub(super) fn $name($ip: *const I, $ctx: &mut Ctx) -> Next {
+                    // SAFETY: `ip` points at a slot holding exactly this variant, which is how
+                    // this handler was selected in the first place
+                    let I::$name { $($field,)* .. } = (unsafe { *$ip }) else {
+                        // SAFETY: guaranteed by handler selection
+                        unsafe { unreachable_unchecked() }
+                    };
+                    // SAFETY: the stream ends with a jump, so advancing stays in bounds
+                    let $next = unsafe { $ip.add($slots) };
+                    let $next = $body;
+                    // Every path that stops execution returns early, so `next` is always a valid
+                    // instruction here
+                    let handler = dispatch($ctx, $next);
+                    // Deliberately NOT `become`: this measures whether LLVM turns an ordinary
+                    // call in tail position into a sibling call on its own
+                    handler($next, $ctx)
+                }
+            )*
+
+            pub(super) fn unsupported(ip: *const I, ctx: &mut Ctx) -> Next {
+                cold_path();
+                // SAFETY: `ip` points at a valid instruction
+                ctx.stop = Stop::Unsupported(unsafe { discriminant(ip) });
+                core::ptr::null()
+            }
+        }
+
+        /// Pick the plain-call handler for an already decoded instruction
+        fn plain_tail_handler_for(instruction: I) -> Handler {
+            match instruction {
+                $( I::$name { .. } => plain_tail_handlers::$name as Handler, )*
+                _ => plain_tail_handlers::unsupported as Handler,
+            }
+        }
+    };
+}
+
+ops!(emit_plain_tail_handlers);
+
 ops!(emit_tail_handlers);
 
 /// Look up the handler for the instruction at `ip`
@@ -501,6 +557,12 @@ fn run_tail(ctx: &mut Ctx, ip: *const I) -> Next {
     handler(ip, ctx)
 }
 
+/// Enter the chain that relies on LLVM turning tail-position calls into sibling calls
+fn run_plain_tail(ctx: &mut Ctx, ip: *const I) -> Next {
+    let handler = dispatch(ctx, ip);
+    handler(ip, ctx)
+}
+
 // --------------------------------------------------------------------------------------------
 // Entry point
 // --------------------------------------------------------------------------------------------
@@ -514,6 +576,8 @@ pub(crate) enum Dispatch {
     Call,
     /// Function pointer table, chained with guaranteed tail calls
     Tail,
+    /// Function pointer table, chained with ordinary calls in tail position
+    PlainTail,
 }
 
 impl Dispatch {
@@ -522,6 +586,7 @@ impl Dispatch {
             "match" => Some(Self::Match),
             "call" => Some(Self::Call),
             "tail" => Some(Self::Tail),
+            "plaintail" => Some(Self::PlainTail),
             _ => None,
         }
     }
@@ -564,10 +629,10 @@ impl Ctx {
         for &instruction in instructions {
             // SAFETY: the enum is `#[repr(u16)]`
             let discriminant = usize::from(unsafe { discriminant(&raw const instruction) });
-            ctx.handlers[discriminant] = if dispatch == Dispatch::Tail {
-                tail_handler_for(instruction)
-            } else {
-                handler_for(instruction)
+            ctx.handlers[discriminant] = match dispatch {
+                Dispatch::Tail => tail_handler_for(instruction),
+                Dispatch::PlainTail => plain_tail_handler_for(instruction),
+                Dispatch::Match | Dispatch::Call => handler_for(instruction),
             };
         }
 
@@ -596,6 +661,7 @@ impl Ctx {
             Dispatch::Match => run_match(ctx, ip),
             Dispatch::Call => run_call(ctx, ip),
             Dispatch::Tail => run_tail(ctx, ip),
+            Dispatch::PlainTail => run_plain_tail(ctx, ip),
         };
 
         self.stop
