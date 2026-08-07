@@ -122,6 +122,14 @@ fn run_once() -> anyhow::Result<std::time::Duration> {
     let instruction_fetcher =
         unsafe { EagerInstructionFetcher::new(text_data, TRAP_ADDRESS, text_addr, entry_point) };
 
+    let setup = Setup {
+        stack_pointer,
+        global_pointer,
+        argv_addr,
+        text_addr,
+        entry_point,
+    };
+
     let mut state = BasicInterpreterState {
         regs,
         ext_state: TimeCsrState::default(),
@@ -139,67 +147,7 @@ fn run_once() -> anyhow::Result<std::time::Duration> {
         let dispatch = threaded::Dispatch::parse(&dispatch)
             .with_context(|| format!("Unknown `COREMARK_DISPATCH` value {dispatch}"))?;
 
-        // The safe back end runs against exactly the same `BasicRegisters` and `GuestMemory` the
-        // generic loop uses, borrowed out of the state that already owns them
-        if dispatch == threaded::Dispatch::SafeBranchless {
-            let BasicInterpreterState {
-                memory,
-                instruction_fetcher,
-                ..
-            } = &mut state;
-
-            let mut regs = threaded::BranchlessRegisters::default();
-            regs.write(Reg::Ra, TRAP_ADDRESS);
-            regs.write(Reg::Sp, stack_pointer);
-            regs.write(Reg::Gp, global_pointer);
-            regs.write(Reg::A0, 1);
-            regs.write(Reg::A1, argv_addr);
-
-            let host_start = std::time::Instant::now();
-            let stop = threaded::run_safe(
-                instruction_fetcher.instructions(),
-                text_addr,
-                TRAP_ADDRESS,
-                entry_point,
-                &mut regs,
-                memory,
-            );
-            let host_elapsed = host_start.elapsed();
-
-            if stop != threaded::Stop::Done {
-                return Err(anyhow::anyhow!("Threaded execution failed: {stop:?}"));
-            }
-
-            let output = read_output(&state.memory, output_buf_addr, output_buf_size)
-                .context("Coremark output not found in guest memory")?;
-            print!("{output}");
-
-            return Ok(host_elapsed);
-        }
-
-        if dispatch == threaded::Dispatch::Safe {
-            let BasicInterpreterState {
-                regs,
-                memory,
-                instruction_fetcher,
-                ..
-            } = &mut state;
-
-            let host_start = std::time::Instant::now();
-            let stop = threaded::run_safe(
-                instruction_fetcher.instructions(),
-                text_addr,
-                TRAP_ADDRESS,
-                entry_point,
-                regs,
-                memory,
-            );
-            let host_elapsed = host_start.elapsed();
-
-            if stop != threaded::Stop::Done {
-                return Err(anyhow::anyhow!("Threaded execution failed: {stop:?}"));
-            }
-
+        if let Some(host_elapsed) = run_safe_dispatch(dispatch, &mut state, &setup)? {
             let output = read_output(&state.memory, output_buf_addr, output_buf_size)
                 .context("Coremark output not found in guest memory")?;
             print!("{output}");
@@ -246,6 +194,90 @@ fn run_once() -> anyhow::Result<std::time::Duration> {
     let output = read_output(&state.memory, output_buf_addr, output_buf_size)
         .context("Coremark output not found in guest memory")?;
     print!("{output}");
+
+    Ok(host_elapsed)
+}
+
+/// Interpreter state as this runner instantiates it
+type CoremarkState = BasicInterpreterState<
+    BasicRegisters<Reg<u64>>,
+    TimeCsrState,
+    GuestMemory<MEMORY_BASE_ADDRESS, MEMORY_SIZE>,
+    EagerInstructionFetcher,
+    IllegalEcallSystemInstructionHandler,
+>;
+
+/// Everything needed to put a guest into its initial state
+struct Setup {
+    stack_pointer: u64,
+    global_pointer: u64,
+    argv_addr: u64,
+    text_addr: u64,
+    entry_point: u64,
+}
+
+/// Run one of the safe back ends, or return `None` if `dispatch` is not one of them.
+///
+/// They differ only in which register file they are instantiated with, which is the point: the
+/// handlers are generic over it.
+fn run_safe_dispatch(
+    dispatch: threaded::Dispatch,
+    state: &mut CoremarkState,
+    setup: &Setup,
+) -> anyhow::Result<Option<std::time::Duration>> {
+    let host_elapsed = match dispatch {
+        threaded::Dispatch::Safe => run_safe_with::<BasicRegisters<Reg<u64>>>(state, setup)?,
+        threaded::Dispatch::SafeBranchless => {
+            run_safe_with::<threaded::BranchlessRegisters>(state, setup)?
+        }
+        threaded::Dispatch::SafeZeroStore => {
+            run_safe_with::<threaded::ZeroStoreRegisters>(state, setup)?
+        }
+        threaded::Dispatch::Match
+        | threaded::Dispatch::Call
+        | threaded::Dispatch::Tail
+        | threaded::Dispatch::PlainTail => return Ok(None),
+    };
+
+    Ok(Some(host_elapsed))
+}
+
+/// Run the safe back end with a specific register file, borrowing memory and the decoded stream
+/// out of the state that owns them
+fn run_safe_with<Regs>(
+    state: &mut CoremarkState,
+    setup: &Setup,
+) -> anyhow::Result<std::time::Duration>
+where
+    Regs: RegisterFile<Reg<u64>> + Default,
+{
+    let mut regs = Regs::default();
+    regs.write(Reg::Ra, TRAP_ADDRESS);
+    regs.write(Reg::Sp, setup.stack_pointer);
+    regs.write(Reg::Gp, setup.global_pointer);
+    regs.write(Reg::A0, 1);
+    regs.write(Reg::A1, setup.argv_addr);
+
+    let BasicInterpreterState {
+        memory,
+        instruction_fetcher,
+        ..
+    } = state;
+
+    let host_start = std::time::Instant::now();
+    let stop = threaded::run_safe(
+        instruction_fetcher.instructions(),
+        setup.text_addr,
+        TRAP_ADDRESS,
+        setup.entry_point,
+        &mut regs,
+        memory,
+    );
+    let host_elapsed = host_start.elapsed();
+
+    if stop != threaded::Stop::Done {
+        return Err(anyhow::anyhow!("Threaded execution failed: {stop:?}"));
+    }
 
     Ok(host_elapsed)
 }
