@@ -24,6 +24,7 @@ use ab_riscv_interpreter::basic::BasicRegister;
 use ab_riscv_interpreter::prelude::*;
 use ab_riscv_primitives::prelude::*;
 use core::hint::{cold_path, unreachable_unchecked};
+#[cfg(feature = "dispatch-safe")]
 use core::marker::PhantomData;
 use std::time::Instant;
 
@@ -51,13 +52,26 @@ pub(crate) enum Stop {
     Unsupported(u16),
 }
 
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
 /// Result of a handler: the instruction pointer to continue at, or null when execution stopped (in
 /// which case the reason is in [`Ctx::stop`]).
 type Next = *const I;
 
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
 /// A single instruction handler
 type Handler = fn(*const I, &mut Ctx) -> Next;
 
+/// Filler for discriminants that never appear in the decoded stream, so that the dispatch table is
+/// fully initialized before it is populated from the program
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
+fn unsupported(ip: *const I, ctx: &mut Ctx) -> Next {
+    cold_path();
+    // SAFETY: `ip` points at a valid instruction
+    ctx.stop = Stop::Unsupported(unsafe { discriminant(ip) });
+    core::ptr::null()
+}
+
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
 /// Interpreter state, laid out as one contiguous block so that a single base pointer reaches
 /// memory, registers and everything else
 #[repr(C, align(64))]
@@ -93,6 +107,7 @@ unsafe fn discriminant(instruction: *const I) -> u16 {
     unsafe { instruction.cast::<u16>().read() }
 }
 
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
 macro_rules! reg_read {
     ($ctx:ident, $reg:expr) => {
         // SAFETY: register offsets are always below 32
@@ -100,6 +115,7 @@ macro_rules! reg_read {
     };
 }
 
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
 macro_rules! reg_write {
     ($ctx:ident, $reg:expr, $value:expr) => {{
         let offset = usize::from(BasicRegister::offset($reg));
@@ -110,6 +126,7 @@ macro_rules! reg_write {
     }};
 }
 
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
 macro_rules! mem_read {
     ($ctx:ident, $ty:ty, $addr:expr) => {{
         let addr = $addr;
@@ -129,6 +146,7 @@ macro_rules! mem_read {
     }};
 }
 
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
 macro_rules! mem_write {
     ($ctx:ident, $ty:ty, $addr:expr, $value:expr) => {{
         let addr = $addr;
@@ -150,6 +168,7 @@ macro_rules! mem_write {
 }
 
 /// Read of the `time` CSR into `$rd`, provided the access really is a pure read of it
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
 macro_rules! csr_read {
     ($ctx:ident, $rd:expr, $csr_index:expr, $write_operand:expr) => {{
         const CSR_TIME: u16 = 0xC01;
@@ -166,6 +185,7 @@ macro_rules! csr_read {
     }};
 }
 
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
 macro_rules! csr_illegal {
     ($ctx:ident) => {{
         cold_path();
@@ -175,6 +195,7 @@ macro_rules! csr_illegal {
 }
 
 /// Stop execution with the given reason
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
 macro_rules! trap {
     ($ctx:ident, $stop:ident) => {{
         cold_path();
@@ -187,6 +208,7 @@ macro_rules! trap {
 ///
 /// Every two bytes of guest code get one slot in the decoded stream, hence the shift by two rather
 /// than by three.
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
 macro_rules! current_pc {
     ($ctx:ident, $ip:ident) => {
         $ctx.base_addr
@@ -198,6 +220,7 @@ macro_rules! current_pc {
 ///
 /// PC-relative targets stay inside the decoded stream, so this is pointer arithmetic plus a bounds
 /// check rather than the full address-to-slot conversion [`jump_absolute`] has to do.
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
 macro_rules! jump_relative {
     ($ctx:ident, $ip:ident, $imm:expr) => {{
         // Two guest bytes per 8-byte slot, so one guest byte is four bytes of stream
@@ -218,6 +241,7 @@ macro_rules! jump_relative {
 }
 
 /// Instruction pointer for a jump to absolute guest address `$target`
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
 macro_rules! jump_absolute {
     ($ctx:ident, $target:expr) => {{
         let target = $target;
@@ -459,6 +483,7 @@ macro_rules! ops {
 // Variant 1: one big `match`, each arm advancing the instruction pointer itself
 // --------------------------------------------------------------------------------------------
 
+#[cfg(feature = "dispatch-match")]
 macro_rules! emit_match {
     (
         $ctx:ident, $ip:ident, $next:ident,
@@ -487,12 +512,14 @@ macro_rules! emit_match {
     };
 }
 
+#[cfg(feature = "dispatch-match")]
 ops!(emit_match);
 
 // --------------------------------------------------------------------------------------------
 // Variants 2-4: one function per instruction
 // --------------------------------------------------------------------------------------------
 
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call"))]
 macro_rules! emit_handlers {
     (
         $ctx:ident, $ip:ident, $next:ident,
@@ -522,14 +549,6 @@ macro_rules! emit_handlers {
                 }
             )*
 
-            /// Filler for discriminants that never appear in the decoded stream, so that the
-            /// dispatch table is fully initialized before it is populated from the program
-            pub(super) fn unsupported(ip: *const I, ctx: &mut Ctx) -> Next {
-                cold_path();
-                // SAFETY: `ip` points at a valid instruction
-                ctx.stop = Stop::Unsupported(unsafe { discriminant(ip) });
-                core::ptr::null()
-            }
         }
 
         /// Pick the handler for an already decoded instruction
@@ -541,8 +560,10 @@ macro_rules! emit_handlers {
     };
 }
 
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call"))]
 ops!(emit_handlers);
 
+#[cfg(feature = "dispatch-tail")]
 macro_rules! emit_tail_handlers {
     (
         $ctx:ident, $ip:ident, $next:ident,
@@ -587,6 +608,7 @@ macro_rules! emit_tail_handlers {
     };
 }
 
+#[cfg(feature = "dispatch-plaintail")]
 macro_rules! emit_plain_tail_handlers {
     (
         $ctx:ident, $ip:ident, $next:ident,
@@ -632,10 +654,13 @@ macro_rules! emit_plain_tail_handlers {
     };
 }
 
+#[cfg(feature = "dispatch-plaintail")]
 ops!(emit_plain_tail_handlers);
 
+#[cfg(feature = "dispatch-tail")]
 ops!(emit_tail_handlers);
 
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
 /// Look up the handler for the instruction at `ip`
 #[inline(always)]
 fn dispatch(ctx: &Ctx, ip: *const I) -> Handler {
@@ -647,6 +672,7 @@ fn dispatch(ctx: &Ctx, ip: *const I) -> Handler {
 }
 
 /// Driver loop calling one handler per instruction through the dispatch table
+#[cfg(feature = "dispatch-call")]
 fn run_call(ctx: &mut Ctx, mut ip: *const I) -> Next {
     loop {
         let handler = dispatch(ctx, ip);
@@ -660,12 +686,14 @@ fn run_call(ctx: &mut Ctx, mut ip: *const I) -> Next {
 }
 
 /// Enter the tail-call-threaded chain
+#[cfg(feature = "dispatch-tail")]
 fn run_tail(ctx: &mut Ctx, ip: *const I) -> Next {
     let handler = dispatch(ctx, ip);
     handler(ip, ctx)
 }
 
 /// Enter the chain that relies on LLVM turning tail-position calls into sibling calls
+#[cfg(feature = "dispatch-plaintail")]
 fn run_plain_tail(ctx: &mut Ctx, ip: *const I) -> Next {
     let handler = dispatch(ctx, ip);
     handler(ip, ctx)
@@ -700,18 +728,26 @@ pub(crate) enum Dispatch {
 impl Dispatch {
     pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
+            #[cfg(feature = "dispatch-match")]
             "match" => Some(Self::Match),
+            #[cfg(feature = "dispatch-call")]
             "call" => Some(Self::Call),
+            #[cfg(feature = "dispatch-tail")]
             "tail" => Some(Self::Tail),
+            #[cfg(feature = "dispatch-plaintail")]
             "plaintail" => Some(Self::PlainTail),
+            #[cfg(feature = "dispatch-safe-basic")]
             "safe" => Some(Self::Safe),
+            #[cfg(feature = "dispatch-safe-branchless")]
             "safebranchless" => Some(Self::SafeBranchless),
+            #[cfg(feature = "dispatch-safe-zerostore")]
             "safezerostore" => Some(Self::SafeZeroStore),
             _ => None,
         }
     }
 }
 
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
 impl Ctx {
     /// Build a context around an already decoded instruction stream
     pub(crate) fn new(
@@ -737,7 +773,7 @@ impl Ctx {
             (&raw mut (*ctx_ptr).slots).write(instructions.len());
             (&raw mut (*ctx_ptr).base_addr).write(base_addr);
             (&raw mut (*ctx_ptr).return_trap).write(return_trap);
-            (&raw mut (*ctx_ptr).handlers).write([handlers::unsupported as Handler; VARIANTS]);
+            (&raw mut (*ctx_ptr).handlers).write([unsupported as Handler; VARIANTS]);
             (&raw mut (*ctx_ptr).start).write(Instant::now());
             (&raw mut (*ctx_ptr).stop).write(Stop::Done);
             ctx.assume_init()
@@ -750,13 +786,13 @@ impl Ctx {
             // SAFETY: the enum is `#[repr(u16)]`
             let discriminant = usize::from(unsafe { discriminant(&raw const instruction) });
             ctx.handlers[discriminant] = match dispatch {
+                #[cfg(feature = "dispatch-tail")]
                 Dispatch::Tail => tail_handler_for(instruction),
+                #[cfg(feature = "dispatch-plaintail")]
                 Dispatch::PlainTail => plain_tail_handler_for(instruction),
-                Dispatch::Match
-                | Dispatch::Call
-                | Dispatch::Safe
-                | Dispatch::SafeBranchless
-                | Dispatch::SafeZeroStore => handler_for(instruction),
+                #[cfg(any(feature = "dispatch-match", feature = "dispatch-call"))]
+                Dispatch::Match | Dispatch::Call => handler_for(instruction),
+                _ => unsupported,
             };
         }
 
@@ -782,20 +818,24 @@ impl Ctx {
 
         let ctx = &mut *self;
         match dispatch {
+            #[cfg(feature = "dispatch-match")]
             Dispatch::Match => run_match(ctx, ip),
+            #[cfg(feature = "dispatch-call")]
             Dispatch::Call => run_call(ctx, ip),
+            #[cfg(feature = "dispatch-tail")]
             Dispatch::Tail => run_tail(ctx, ip),
+            #[cfg(feature = "dispatch-plaintail")]
             Dispatch::PlainTail => run_plain_tail(ctx, ip),
-            // Handled before a `Ctx` is ever built, they borrow the caller's components instead
-            Dispatch::Safe | Dispatch::SafeBranchless | Dispatch::SafeZeroStore => {
-                unreachable!("Handled by the caller")
-            }
+            // The safe back ends are handled before a `Ctx` is ever built, they borrow the
+            // caller's components instead
+            _ => unreachable!("Not compiled in"),
         };
 
         self.stop
     }
 }
 
+#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
 /// Only the parts of the interface that setting up and inspecting the guest needs; the interpreter
 /// itself goes straight at [`Ctx::mem`]
 impl VirtualMemory for Ctx {
@@ -877,10 +917,12 @@ impl VirtualMemory for Ctx {
 // code.
 // --------------------------------------------------------------------------------------------
 
+#[cfg(feature = "dispatch-safe")]
 /// Position in the decoded instruction stream
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct Ip<'a>(&'a I);
 
+#[cfg(feature = "dispatch-safe")]
 /// The decoded program, plus what is needed to turn a guest address into a position in it.
 ///
 /// This is the equivalent of an instruction fetcher: it is borrowed by the interpreter, not owned.
@@ -891,6 +933,7 @@ pub(crate) struct Stream<'a> {
     return_trap: u64,
 }
 
+#[cfg(feature = "dispatch-safe")]
 /// Stand-in for extension state.
 ///
 /// Also carries why execution stopped, so that a handler can return just an instruction pointer.
@@ -902,19 +945,23 @@ pub(crate) struct Ext {
     stop: Stop,
 }
 
+#[cfg(feature = "dispatch-safe")]
 /// Stand-in for a system instruction handler, present so that the handler signature carries the
 /// same six arguments a real implementation would need
 #[derive(Debug)]
 pub(crate) struct Sys;
 
+#[cfg(feature = "dispatch-safe")]
 /// Result of a handler: where to continue, or `None` when execution stopped, in which case the
 /// reason is in [`Ext::stop`]. `Option<Ip>` is pointer-sized thanks to the null niche, so it comes
 /// back in a register.
 type SafeNext<'a> = Option<Ip<'a>>;
 
+#[cfg(feature = "dispatch-safe")]
 type SafeHandler<Regs, Memory> =
     for<'a> fn(Ip<'a>, &mut Regs, &mut Memory, &mut Ext, &Stream<'a>, &mut Sys) -> SafeNext<'a>;
 
+#[cfg(feature = "dispatch-safe")]
 impl<'a> Ip<'a> {
     /// Position of the instruction at guest address `address`
     #[inline(always)]
@@ -970,6 +1017,7 @@ impl<'a> Ip<'a> {
     }
 }
 
+#[cfg(feature = "dispatch-safe")]
 /// The borrowed components, reassembled from the handler arguments.
 ///
 /// Purely a naming convenience for the instruction table: it is a local whose address never
@@ -999,6 +1047,7 @@ macro_rules! reg_write {
 }
 
 /// Record why execution stopped and unwind out of the handler chain
+#[cfg(feature = "dispatch-safe")]
 macro_rules! stop {
     ($ctx:ident, $stop:expr) => {{
         cold_path();
@@ -1007,6 +1056,7 @@ macro_rules! stop {
     }};
 }
 
+#[cfg(feature = "dispatch-safe")]
 macro_rules! mem_read {
     ($ctx:ident, $ty:ty, $addr:expr) => {
         match VirtualMemory::read::<$ty>($ctx.memory, $addr) {
@@ -1016,6 +1066,7 @@ macro_rules! mem_read {
     };
 }
 
+#[cfg(feature = "dispatch-safe")]
 macro_rules! mem_write {
     ($ctx:ident, $ty:ty, $addr:expr, $value:expr) => {
         match VirtualMemory::write::<$ty>($ctx.memory, $addr, $value) {
@@ -1025,6 +1076,7 @@ macro_rules! mem_write {
     };
 }
 
+#[cfg(feature = "dispatch-safe")]
 macro_rules! csr_read {
     ($ctx:ident, $rd:expr, $csr_index:expr, $write_operand:expr) => {{
         const CSR_TIME: u16 = 0xC01;
@@ -1038,18 +1090,21 @@ macro_rules! csr_read {
     }};
 }
 
+#[cfg(feature = "dispatch-safe")]
 macro_rules! csr_illegal {
     ($ctx:ident) => {
         stop!($ctx, Stop::UnsupportedCsr(0))
     };
 }
 
+#[cfg(feature = "dispatch-safe")]
 macro_rules! trap {
     ($ctx:ident, $stop:ident) => {
         stop!($ctx, Stop::$stop)
     };
 }
 
+#[cfg(feature = "dispatch-safe")]
 macro_rules! current_pc {
     ($ctx:ident, $ip:ident) => {
         $ctx.stream
@@ -1058,6 +1113,7 @@ macro_rules! current_pc {
     };
 }
 
+#[cfg(feature = "dispatch-safe")]
 macro_rules! jump_relative {
     ($ctx:ident, $ip:ident, $imm:expr) => {{
         // Arithmetic shift rather than `/ 2`: branch and jump immediates always have their low
@@ -1074,6 +1130,7 @@ macro_rules! jump_relative {
     }};
 }
 
+#[cfg(feature = "dispatch-safe")]
 macro_rules! jump_absolute {
     ($ctx:ident, $target:expr) => {{
         let target = $target;
@@ -1089,6 +1146,7 @@ macro_rules! jump_absolute {
     }};
 }
 
+#[cfg(feature = "dispatch-safe")]
 macro_rules! emit_safe_handlers {
     (
         $ctx:ident, $ip:ident, $next:ident,
@@ -1180,8 +1238,10 @@ macro_rules! emit_safe_handlers {
     };
 }
 
+#[cfg(feature = "dispatch-safe")]
 ops!(emit_safe_handlers);
 
+#[cfg(feature = "dispatch-safe")]
 /// Handler for the instruction at `ip`
 #[inline(always)]
 fn table<Regs, Memory>(ip: Ip<'_>) -> SafeHandler<Regs, Memory>
@@ -1200,8 +1260,10 @@ where
     Handlers::<Regs, Memory>::TABLE[usize::from(ip.discriminant())]
 }
 
+#[cfg(feature = "dispatch-safe")]
 struct Handlers<Regs, Memory>(PhantomData<(Regs, Memory)>);
 
+#[cfg(feature = "dispatch-safe")]
 impl<Regs, Memory> Handlers<Regs, Memory>
 where
     Regs: RegisterFile<R>,
@@ -1210,6 +1272,7 @@ where
     const TABLE: [SafeHandler<Regs, Memory>; 256] = safe_handlers::build::<Regs, Memory>();
 }
 
+#[cfg(feature = "dispatch-safe-branchless")]
 /// A register file that needs no branch to read `x0`.
 ///
 /// Writes to `x0` are steered into a sink slot instead of being discarded by a branch, which keeps
@@ -1222,6 +1285,7 @@ pub(crate) struct BranchlessRegisters {
     regs: [u64; 33],
 }
 
+#[cfg(feature = "dispatch-safe-branchless")]
 impl Default for BranchlessRegisters {
     #[inline(always)]
     fn default() -> Self {
@@ -1229,6 +1293,7 @@ impl Default for BranchlessRegisters {
     }
 }
 
+#[cfg(feature = "dispatch-safe-branchless")]
 impl RegisterFile<R> for BranchlessRegisters {
     #[inline(always)]
     fn read(&self, reg: R) -> u64 {
@@ -1245,6 +1310,7 @@ impl RegisterFile<R> for BranchlessRegisters {
     }
 }
 
+#[cfg(feature = "dispatch-safe-zerostore")]
 /// A register file with no branch *and* no conditional move.
 ///
 /// [`BranchlessRegisters`] still needs a `cmov` to steer writes to `x0` into a sink slot. Here the
@@ -1260,6 +1326,7 @@ pub(crate) struct ZeroStoreRegisters {
     regs: [u64; 32],
 }
 
+#[cfg(feature = "dispatch-safe-zerostore")]
 impl Default for ZeroStoreRegisters {
     #[inline(always)]
     fn default() -> Self {
@@ -1267,6 +1334,7 @@ impl Default for ZeroStoreRegisters {
     }
 }
 
+#[cfg(feature = "dispatch-safe-zerostore")]
 impl RegisterFile<R> for ZeroStoreRegisters {
     #[inline(always)]
     fn read(&self, reg: R) -> u64 {
@@ -1286,6 +1354,7 @@ impl RegisterFile<R> for ZeroStoreRegisters {
 }
 
 /// Run the program with the safe, generic, tail-call-threaded back end
+#[cfg(feature = "dispatch-safe")]
 pub(crate) fn run_safe<Regs, Memory>(
     instructions: &[I],
     base_addr: u64,
