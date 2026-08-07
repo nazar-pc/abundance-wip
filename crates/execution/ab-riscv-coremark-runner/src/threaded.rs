@@ -692,6 +692,9 @@ pub(crate) enum Dispatch {
     /// [`Self::Safe`] with [`BranchlessRegisters`] substituted for `BasicRegisters`, to show that
     /// the same handlers are genuinely generic over the register file
     SafeBranchless,
+    /// [`Self::Safe`] with [`ZeroStoreRegisters`], which drops the conditional move
+    /// [`BranchlessRegisters`] still needs
+    SafeZeroStore,
 }
 
 impl Dispatch {
@@ -703,6 +706,7 @@ impl Dispatch {
             "plaintail" => Some(Self::PlainTail),
             "safe" => Some(Self::Safe),
             "safebranchless" => Some(Self::SafeBranchless),
+            "safezerostore" => Some(Self::SafeZeroStore),
             _ => None,
         }
     }
@@ -748,9 +752,11 @@ impl Ctx {
             ctx.handlers[discriminant] = match dispatch {
                 Dispatch::Tail => tail_handler_for(instruction),
                 Dispatch::PlainTail => plain_tail_handler_for(instruction),
-                Dispatch::Match | Dispatch::Call | Dispatch::Safe | Dispatch::SafeBranchless => {
-                    handler_for(instruction)
-                }
+                Dispatch::Match
+                | Dispatch::Call
+                | Dispatch::Safe
+                | Dispatch::SafeBranchless
+                | Dispatch::SafeZeroStore => handler_for(instruction),
             };
         }
 
@@ -781,7 +787,9 @@ impl Ctx {
             Dispatch::Tail => run_tail(ctx, ip),
             Dispatch::PlainTail => run_plain_tail(ctx, ip),
             // Handled before a `Ctx` is ever built, they borrow the caller's components instead
-            Dispatch::Safe | Dispatch::SafeBranchless => unreachable!("Handled by the caller"),
+            Dispatch::Safe | Dispatch::SafeBranchless | Dispatch::SafeZeroStore => {
+                unreachable!("Handled by the caller")
+            }
         };
 
         self.stop
@@ -1234,6 +1242,46 @@ impl RegisterFile<R> for BranchlessRegisters {
         let offset = if offset == 0 { 32 } else { offset };
         // SAFETY: `BasicRegister::offset()` is guaranteed to be below 32, and the sink slot is 32
         *unsafe { self.regs.get_unchecked_mut(offset) } = value;
+    }
+}
+
+/// A register file with no branch *and* no conditional move.
+///
+/// [`BranchlessRegisters`] still needs a `cmov` to steer writes to `x0` into a sink slot. Here the
+/// write is unconditional and slot zero is re-zeroed afterwards, which restores the invariant that
+/// makes reads unconditional. That trades three ALU ops for one extra store, and leaves a handler
+/// with no internal control flow at all.
+///
+/// Note this is the opposite of the right trade for the generic `match` loop, where the same
+/// change measured 8.5% *slower*: there, reads dominate and staying branchy avoids loading `x0`
+/// for the many instructions whose `rs2` is only a placeholder.
+#[derive(Debug, Clone)]
+pub(crate) struct ZeroStoreRegisters {
+    regs: [u64; 32],
+}
+
+impl Default for ZeroStoreRegisters {
+    #[inline(always)]
+    fn default() -> Self {
+        Self { regs: [0; _] }
+    }
+}
+
+impl RegisterFile<R> for ZeroStoreRegisters {
+    #[inline(always)]
+    fn read(&self, reg: R) -> u64 {
+        // SAFETY: `BasicRegister::offset()` is guaranteed to be below 32
+        *unsafe { self.regs.get_unchecked(usize::from(BasicRegister::offset(reg))) }
+    }
+
+    #[inline(always)]
+    fn write(&mut self, reg: R, value: u64) {
+        // SAFETY: `BasicRegister::offset()` is guaranteed to be below 32
+        *unsafe { self.regs.get_unchecked_mut(usize::from(BasicRegister::offset(reg))) } = value;
+        // Writes to `x0` have to be discarded. Rather than branching or selecting a sink slot,
+        // let the write land and put the zero back; reads then never need a check.
+        // SAFETY: the register file always has at least one slot
+        *unsafe { self.regs.get_unchecked_mut(0) } = 0;
     }
 }
 
