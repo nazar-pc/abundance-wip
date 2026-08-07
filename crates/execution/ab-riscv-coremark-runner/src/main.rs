@@ -141,6 +141,74 @@ fn run_once() -> anyhow::Result<std::time::Duration> {
         let dispatch = threaded::Dispatch::parse(&dispatch)
             .with_context(|| format!("Unknown `COREMARK_DISPATCH` value {dispatch}"))?;
 
+        // The safe back end runs against exactly the same `BasicRegisters` and `GuestMemory` the
+        // generic loop uses, borrowed out of the state that already owns them
+        if dispatch == threaded::Dispatch::SafeBranchless {
+            let BasicInterpreterState {
+                memory,
+                instruction_fetcher,
+                ..
+            } = &mut state;
+
+            let mut regs = threaded::BranchlessRegisters::default();
+            regs.write(Reg::Ra, TRAP_ADDRESS);
+            regs.write(Reg::Sp, stack_pointer);
+            regs.write(Reg::Gp, global_pointer);
+            regs.write(Reg::A0, 1);
+            regs.write(Reg::A1, argv_addr);
+
+            let host_start = std::time::Instant::now();
+            let stop = threaded::run_safe(
+                instruction_fetcher.instructions(),
+                text_addr,
+                TRAP_ADDRESS,
+                entry_point,
+                &mut regs,
+                memory,
+            );
+            let host_elapsed = host_start.elapsed();
+
+            if stop != threaded::Stop::Done {
+                return Err(anyhow::anyhow!("Threaded execution failed: {stop:?}"));
+            }
+
+            let output = read_output(&state.memory, output_buf_addr, output_buf_size)
+                .context("Coremark output not found in guest memory")?;
+            print!("{output}");
+
+            return Ok(host_elapsed);
+        }
+
+        if dispatch == threaded::Dispatch::Safe {
+            let BasicInterpreterState {
+                regs,
+                memory,
+                instruction_fetcher,
+                ..
+            } = &mut state;
+
+            let host_start = std::time::Instant::now();
+            let stop = threaded::run_safe(
+                instruction_fetcher.instructions(),
+                text_addr,
+                TRAP_ADDRESS,
+                entry_point,
+                regs,
+                memory,
+            );
+            let host_elapsed = host_start.elapsed();
+
+            if stop != threaded::Stop::Done {
+                return Err(anyhow::anyhow!("Threaded execution failed: {stop:?}"));
+            }
+
+            let output = read_output(&state.memory, output_buf_addr, output_buf_size)
+                .context("Coremark output not found in guest memory")?;
+            print!("{output}");
+
+            return Ok(host_elapsed);
+        }
+
         let mut ctx = threaded::Ctx::new(
             state.instruction_fetcher.instructions(),
             text_addr,

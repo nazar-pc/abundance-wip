@@ -24,6 +24,7 @@ use ab_riscv_interpreter::basic::BasicRegister;
 use ab_riscv_interpreter::prelude::*;
 use ab_riscv_primitives::prelude::*;
 use core::hint::{cold_path, unreachable_unchecked};
+use core::marker::PhantomData;
 use std::time::Instant;
 
 /// Register type used by the Coremark runner
@@ -169,6 +170,15 @@ macro_rules! csr_illegal {
     ($ctx:ident) => {{
         cold_path();
         $ctx.stop = Stop::UnsupportedCsr(0);
+        return core::ptr::null();
+    }};
+}
+
+/// Stop execution with the given reason
+macro_rules! trap {
+    ($ctx:ident, $stop:ident) => {{
+        cold_path();
+        $ctx.stop = Stop::$stop;
         return core::ptr::null();
     }};
 }
@@ -326,9 +336,9 @@ macro_rules! ops {
             // ----- RV64I, system -----
             Fence, 2, { }, { next };
             FenceTso, 2, { }, { next };
-            Ecall, 2, { }, { cold_path(); ctx.stop = Stop::IllegalInstruction; return core::ptr::null(); };
+            Ecall, 2, { }, { trap!(ctx, IllegalInstruction) };
             Ebreak, 2, { }, { next };
-            Unimp, 2, { }, { cold_path(); ctx.stop = Stop::IllegalInstruction; return core::ptr::null(); };
+            Unimp, 2, { }, { trap!(ctx, IllegalInstruction) };
 
             // ----- M -----
             Mul, 2, { rs1, rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rs1).wrapping_mul(reg_read!(ctx, rs2))); next };
@@ -429,7 +439,7 @@ macro_rules! ops {
             CAdd, 1, { rs2, rd }, { reg_write!(ctx, rd, reg_read!(ctx, rd).wrapping_add(reg_read!(ctx, rs2))); next };
             CSwsp, 1, { rs2, uimm }, { let a = reg_read!(ctx, R::Sp).wrapping_add(u64::from(uimm)); mem_write!(ctx, u32, a, reg_read!(ctx, rs2) as u32); next };
             CSdsp, 1, { rs2, uimm }, { let a = reg_read!(ctx, R::Sp).wrapping_add(u64::from(uimm)); mem_write!(ctx, u64, a, reg_read!(ctx, rs2)); next };
-            CUnimp, 1, { }, { cold_path(); ctx.stop = Stop::IllegalInstruction; return core::ptr::null(); };
+            CUnimp, 1, { }, { trap!(ctx, IllegalInstruction) };
 
             // ----- Zicsr -----
             //
@@ -676,6 +686,12 @@ pub(crate) enum Dispatch {
     Tail,
     /// Function pointer table, chained with ordinary calls in tail position
     PlainTail,
+    /// Like `Tail`, but safe and generic: registers and memory go through their traits and are
+    /// borrowed rather than owned, and the components are passed as separate arguments
+    Safe,
+    /// [`Self::Safe`] with [`BranchlessRegisters`] substituted for `BasicRegisters`, to show that
+    /// the same handlers are genuinely generic over the register file
+    SafeBranchless,
 }
 
 impl Dispatch {
@@ -685,6 +701,8 @@ impl Dispatch {
             "call" => Some(Self::Call),
             "tail" => Some(Self::Tail),
             "plaintail" => Some(Self::PlainTail),
+            "safe" => Some(Self::Safe),
+            "safebranchless" => Some(Self::SafeBranchless),
             _ => None,
         }
     }
@@ -730,7 +748,9 @@ impl Ctx {
             ctx.handlers[discriminant] = match dispatch {
                 Dispatch::Tail => tail_handler_for(instruction),
                 Dispatch::PlainTail => plain_tail_handler_for(instruction),
-                Dispatch::Match | Dispatch::Call => handler_for(instruction),
+                Dispatch::Match | Dispatch::Call | Dispatch::Safe | Dispatch::SafeBranchless => {
+                    handler_for(instruction)
+                }
             };
         }
 
@@ -760,6 +780,8 @@ impl Ctx {
             Dispatch::Call => run_call(ctx, ip),
             Dispatch::Tail => run_tail(ctx, ip),
             Dispatch::PlainTail => run_plain_tail(ctx, ip),
+            // Handled before a `Ctx` is ever built, they borrow the caller's components instead
+            Dispatch::Safe | Dispatch::SafeBranchless => unreachable!("Handled by the caller"),
         };
 
         self.stop
@@ -827,4 +849,423 @@ impl VirtualMemory for Ctx {
 
         Ok(())
     }
+}
+
+// --------------------------------------------------------------------------------------------
+// Variant 5: safe and generic
+//
+// Same instruction table, but nothing here is specialized to this runner's concrete types and no
+// handler contains `unsafe`:
+//
+// * registers go through `RegisterFile`, memory through `VirtualMemory`, so both are generic and
+//   *borrowed* rather than owned by a state struct
+// * the components are passed as separate arguments rather than bundled behind one pointer, so
+//   each one stays in its own argument register across a tail call instead of being reloaded
+// * the instruction pointer is a `&I` newtype rather than a raw pointer, and stopping is expressed
+//   as `Result` rather than a null pointer
+//
+// The unsafe surface is three one-line helpers (`Ip::advance`, `Ip::discriminant`, and the
+// `Ip::new` invariant), all of it in this scaffolding rather than in generated per-instruction
+// code.
+// --------------------------------------------------------------------------------------------
+
+/// Position in the decoded instruction stream
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct Ip<'a>(&'a I);
+
+/// The decoded program, plus what is needed to turn a guest address into a position in it.
+///
+/// This is the equivalent of an instruction fetcher: it is borrowed by the interpreter, not owned.
+#[derive(Debug)]
+pub(crate) struct Stream<'a> {
+    instructions: &'a [I],
+    base_addr: u64,
+    return_trap: u64,
+}
+
+/// Stand-in for extension state.
+///
+/// Also carries why execution stopped, so that a handler can return just an instruction pointer.
+/// Returning `Result<Ip, Stop>` instead costs a hidden `sret` pointer, which pushes the sixth
+/// argument onto the stack and gives every handler a stack frame.
+#[derive(Debug)]
+pub(crate) struct Ext {
+    start: Instant,
+    stop: Stop,
+}
+
+/// Stand-in for a system instruction handler, present so that the handler signature carries the
+/// same six arguments a real implementation would need
+#[derive(Debug)]
+pub(crate) struct Sys;
+
+/// Result of a handler: where to continue, or `None` when execution stopped, in which case the
+/// reason is in [`Ext::stop`]. `Option<Ip>` is pointer-sized thanks to the null niche, so it comes
+/// back in a register.
+type SafeNext<'a> = Option<Ip<'a>>;
+
+type SafeHandler<Regs, Memory> =
+    for<'a> fn(Ip<'a>, &mut Regs, &mut Memory, &mut Ext, &Stream<'a>, &mut Sys) -> SafeNext<'a>;
+
+impl<'a> Ip<'a> {
+    /// Position of the instruction at guest address `address`
+    #[inline(always)]
+    fn at_address(stream: &Stream<'a>, address: u64) -> Option<Self> {
+        let offset = address.checked_sub(stream.base_addr)?;
+
+        if !offset.is_multiple_of(size_of::<u16>() as u64) {
+            cold_path();
+            return None;
+        }
+
+        Self::at_slot(stream, (offset / size_of::<u16>() as u64) as usize)
+    }
+
+    /// Position of slot `slot` of the stream
+    #[inline(always)]
+    fn at_slot(stream: &Stream<'a>, slot: usize) -> Option<Self> {
+        Some(Self(stream.instructions.get(slot)?))
+    }
+
+    /// Slot this position refers to
+    #[inline(always)]
+    fn slot(self, stream: &Stream<'a>) -> usize {
+        // Plain address arithmetic, no dereference, so this stays outside `unsafe`
+        (self.0 as *const I as usize - stream.instructions.as_ptr() as usize) / size_of::<I>()
+    }
+
+    /// The instruction at this position
+    #[inline(always)]
+    fn get(self) -> &'a I {
+        self.0
+    }
+
+    /// Advance by `slots` slots.
+    ///
+    /// # Safety
+    /// The stream must continue for at least `slots` more slots. `Ctx::new()` guarantees this for
+    /// every instruction that can fall through, because the decoded stream ends with a jump.
+    #[inline(always)]
+    unsafe fn advance(self, slots: usize) -> Self {
+        // SAFETY: guaranteed by function contract
+        Self(unsafe { &*(self.0 as *const I).add(slots) })
+    }
+
+    /// Discriminant of the instruction at this position
+    #[inline(always)]
+    fn discriminant(self) -> u8 {
+        // SAFETY: the enum is `#[repr(u16)]`, so its first two bytes are the discriminant
+        let discriminant = unsafe { (self.0 as *const I).cast::<u16>().read() };
+        // Masking rather than truncating on purpose: it makes the dispatch table index provably
+        // in bounds for a 256-entry table, so the lookup needs no bounds check and no `unsafe`
+        discriminant as u8
+    }
+}
+
+/// The borrowed components, reassembled from the handler arguments.
+///
+/// Purely a naming convenience for the instruction table: it is a local whose address never
+/// escapes, so it is scalarized away and each field stays in the register it arrived in.
+struct Env<'a, 'r, Regs, Memory> {
+    regs: &'r mut Regs,
+    memory: &'r mut Memory,
+    ext: &'r mut Ext,
+    stream: &'r Stream<'a>,
+    sys: &'r mut Sys,
+}
+
+// The instruction table below is expanded a second time against these definitions of the helper
+// macros; `macro_rules!` resolves by textual order, so these shadow the raw-pointer versions above
+// for every expansion that follows.
+
+macro_rules! reg_read {
+    ($ctx:ident, $reg:expr) => {
+        RegisterFile::read($ctx.regs, $reg)
+    };
+}
+
+macro_rules! reg_write {
+    ($ctx:ident, $reg:expr, $value:expr) => {
+        RegisterFile::write($ctx.regs, $reg, $value)
+    };
+}
+
+/// Record why execution stopped and unwind out of the handler chain
+macro_rules! stop {
+    ($ctx:ident, $stop:expr) => {{
+        cold_path();
+        $ctx.ext.stop = $stop;
+        return None;
+    }};
+}
+
+macro_rules! mem_read {
+    ($ctx:ident, $ty:ty, $addr:expr) => {
+        match VirtualMemory::read::<$ty>($ctx.memory, $addr) {
+            Ok(value) => value,
+            Err(_error) => stop!($ctx, Stop::OutOfBounds),
+        }
+    };
+}
+
+macro_rules! mem_write {
+    ($ctx:ident, $ty:ty, $addr:expr, $value:expr) => {
+        match VirtualMemory::write::<$ty>($ctx.memory, $addr, $value) {
+            Ok(()) => {}
+            Err(_error) => stop!($ctx, Stop::OutOfBounds),
+        }
+    };
+}
+
+macro_rules! csr_read {
+    ($ctx:ident, $rd:expr, $csr_index:expr, $write_operand:expr) => {{
+        const CSR_TIME: u16 = 0xC01;
+
+        if $csr_index != CSR_TIME || $write_operand != 0 {
+            stop!($ctx, Stop::UnsupportedCsr($csr_index));
+        }
+
+        let elapsed = $ctx.ext.start.elapsed().as_nanos() as u64;
+        reg_write!($ctx, $rd, elapsed);
+    }};
+}
+
+macro_rules! csr_illegal {
+    ($ctx:ident) => {
+        stop!($ctx, Stop::UnsupportedCsr(0))
+    };
+}
+
+macro_rules! trap {
+    ($ctx:ident, $stop:ident) => {
+        stop!($ctx, Stop::$stop)
+    };
+}
+
+macro_rules! current_pc {
+    ($ctx:ident, $ip:ident) => {
+        $ctx.stream
+            .base_addr
+            .wrapping_add(($ip.slot($ctx.stream) * size_of::<u16>()) as u64)
+    };
+}
+
+macro_rules! jump_relative {
+    ($ctx:ident, $ip:ident, $imm:expr) => {{
+        // Arithmetic shift rather than `/ 2`: branch and jump immediates always have their low
+        // bit clear, so this is exact, and it avoids the round-toward-zero fixup that signed
+        // division expands into
+        let slot = $ip
+            .slot($ctx.stream)
+            .wrapping_add_signed((i64::from($imm) >> 1) as isize);
+
+        match Ip::at_slot($ctx.stream, slot) {
+            Some(target) => target,
+            None => stop!($ctx, Stop::BadJump),
+        }
+    }};
+}
+
+macro_rules! jump_absolute {
+    ($ctx:ident, $target:expr) => {{
+        let target = $target;
+
+        if target == $ctx.stream.return_trap {
+            stop!($ctx, Stop::Done);
+        }
+
+        match Ip::at_address($ctx.stream, target) {
+            Some(target) => target,
+            None => stop!($ctx, Stop::BadJump),
+        }
+    }};
+}
+
+macro_rules! emit_safe_handlers {
+    (
+        $ctx:ident, $ip:ident, $next:ident,
+        $($name:ident, $slots:expr, { $($field:ident),* $(,)? }, $body:block);* $(;)?
+    ) => {
+        mod safe_handlers {
+            use super::*;
+
+            $(
+                #[expect(non_snake_case, reason = "One handler per instruction variant")]
+                #[allow(
+                    unused_variables,
+                    unreachable_code,
+                    reason = "Unconditional jumps do not use the advanced pointer, and trapping \
+                        instructions never reach it"
+                )]
+                pub(super) fn $name<'a, Regs, Memory>(
+                    $ip: Ip<'a>,
+                    regs: &mut Regs,
+                    memory: &mut Memory,
+                    ext: &mut Ext,
+                    stream: &Stream<'a>,
+                    sys: &mut Sys,
+                ) -> SafeNext<'a>
+                where
+                    Regs: RegisterFile<R>,
+                    Memory: VirtualMemory,
+                {
+                    let I::$name { $($field,)* .. } = *$ip.get() else {
+                        // SAFETY: this handler is only ever reached for its own variant
+                        unsafe { unreachable_unchecked() }
+                    };
+                    let $ctx = Env { regs, memory, ext, stream, sys };
+                    // SAFETY: the decoded stream ends with a jump, so anything that can fall
+                    // through has at least this many slots left
+                    let $next = unsafe { $ip.advance($slots) };
+                    let $next = $body;
+                    let handler = table::<Regs, Memory>($next);
+                    become handler(
+                        $next,
+                        $ctx.regs,
+                        $ctx.memory,
+                        $ctx.ext,
+                        $ctx.stream,
+                        $ctx.sys,
+                    )
+                }
+            )*
+
+            pub(super) fn unsupported<'a, Regs, Memory>(
+                ip: Ip<'a>,
+                _regs: &mut Regs,
+                _memory: &mut Memory,
+                ext: &mut Ext,
+                _stream: &Stream<'a>,
+                _sys: &mut Sys,
+            ) -> SafeNext<'a>
+            where
+                Regs: RegisterFile<R>,
+                Memory: VirtualMemory,
+            {
+                cold_path();
+                ext.stop = Stop::Unsupported(u16::from(ip.discriminant()));
+                None
+            }
+
+            /// Dispatch table, in enum declaration order.
+            ///
+            /// `CoremarkInstruction` is `#[repr(u16)]` with no explicit discriminants, so variant
+            /// N has discriminant N and this table can be built at compile time rather than by
+            /// scanning the program.
+            pub(super) const fn build<Regs, Memory>() -> [SafeHandler<Regs, Memory>; 256]
+            where
+                Regs: RegisterFile<R>,
+                Memory: VirtualMemory,
+            {
+                let mut table: [SafeHandler<Regs, Memory>; 256] = [unsupported; 256];
+                let mut index = 0;
+                let listed: &[SafeHandler<Regs, Memory>] = &[$($name,)*];
+
+                while index < listed.len() {
+                    table[index] = listed[index];
+                    index += 1;
+                }
+
+                table
+            }
+        }
+    };
+}
+
+ops!(emit_safe_handlers);
+
+/// Handler for the instruction at `ip`
+#[inline(always)]
+fn table<Regs, Memory>(ip: Ip<'_>) -> SafeHandler<Regs, Memory>
+where
+    Regs: RegisterFile<R>,
+    Memory: VirtualMemory,
+{
+    const {
+        // Every variant must be listed, otherwise dispatch would silently fall back to
+        // `unsupported` for the missing ones
+        assert!(size_of::<I>() == 8);
+    }
+
+    // The index is a `u8` and the table has 256 entries, so this is in bounds by construction and
+    // needs neither a check nor `unsafe`
+    Handlers::<Regs, Memory>::TABLE[usize::from(ip.discriminant())]
+}
+
+struct Handlers<Regs, Memory>(PhantomData<(Regs, Memory)>);
+
+impl<Regs, Memory> Handlers<Regs, Memory>
+where
+    Regs: RegisterFile<R>,
+    Memory: VirtualMemory,
+{
+    const TABLE: [SafeHandler<Regs, Memory>; 256] = safe_handlers::build::<Regs, Memory>();
+}
+
+/// A register file that needs no branch to read `x0`.
+///
+/// Writes to `x0` are steered into a sink slot instead of being discarded by a branch, which keeps
+/// slot zero zero forever and lets reads be unconditional. The unchecked indexing is the same
+/// thing `BasicRegisters` already does, justified by `BasicRegister` being an unsafe trait whose
+/// contract is that `offset()` is below `N`. It stays inside the register file; no generated
+/// handler contains `unsafe`.
+#[derive(Debug, Clone)]
+pub(crate) struct BranchlessRegisters {
+    regs: [u64; 33],
+}
+
+impl Default for BranchlessRegisters {
+    #[inline(always)]
+    fn default() -> Self {
+        Self { regs: [0; _] }
+    }
+}
+
+impl RegisterFile<R> for BranchlessRegisters {
+    #[inline(always)]
+    fn read(&self, reg: R) -> u64 {
+        // SAFETY: `BasicRegister::offset()` is guaranteed to be below 32
+        *unsafe { self.regs.get_unchecked(usize::from(BasicRegister::offset(reg))) }
+    }
+
+    #[inline(always)]
+    fn write(&mut self, reg: R, value: u64) {
+        let offset = usize::from(BasicRegister::offset(reg));
+        let offset = if offset == 0 { 32 } else { offset };
+        // SAFETY: `BasicRegister::offset()` is guaranteed to be below 32, and the sink slot is 32
+        *unsafe { self.regs.get_unchecked_mut(offset) } = value;
+    }
+}
+
+/// Run the program with the safe, generic, tail-call-threaded back end
+pub(crate) fn run_safe<Regs, Memory>(
+    instructions: &[I],
+    base_addr: u64,
+    return_trap: u64,
+    pc: u64,
+    regs: &mut Regs,
+    memory: &mut Memory,
+) -> Stop
+where
+    Regs: RegisterFile<R>,
+    Memory: VirtualMemory,
+{
+    let stream = Stream {
+        instructions,
+        base_addr,
+        return_trap,
+    };
+    let mut ext = Ext {
+        start: Instant::now(),
+        stop: Stop::Done,
+    };
+    let mut sys = Sys;
+
+    let Some(ip) = Ip::at_address(&stream, pc) else {
+        return Stop::BadJump;
+    };
+    let handler = table::<Regs, Memory>(ip);
+    handler(ip, regs, memory, &mut ext, &stream, &mut sys);
+
+    ext.stop
 }
