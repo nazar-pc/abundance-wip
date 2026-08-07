@@ -1,6 +1,7 @@
 #![expect(incomplete_features, reason = "explicit_tail_calls")]
 #![feature(
     const_cmp,
+    explicit_tail_calls,
     const_trait_impl,
     const_try,
     const_try_residual,
@@ -10,8 +11,10 @@
 )]
 
 mod elf;
+mod histogram;
 mod instruction;
 mod interpreter;
+mod threaded;
 mod time_csr;
 
 use crate::elf::{LoadedElf, load_elf};
@@ -59,6 +62,37 @@ fn main() -> anyhow::Result<()> {
             feature to make ELF building required"
         ));
     }
+    // Repeating the whole guest run in-process and reporting the best time makes results usable on
+    // noisy machines, where a single run can easily be 10% off
+    let repeats = std::env::var("COREMARK_REPEAT")
+        .ok()
+        .map(|repeats| repeats.parse::<u32>())
+        .transpose()
+        .context("`COREMARK_REPEAT` is not a number")?
+        .unwrap_or(1)
+        .max(1);
+
+    let mut best_elapsed = None::<std::time::Duration>;
+
+    for _ in 0..repeats {
+        let host_elapsed = run_once()?;
+        best_elapsed = Some(match best_elapsed {
+            Some(best) => best.min(host_elapsed),
+            None => host_elapsed,
+        });
+    }
+
+    println!(
+        "Host elapsed: {:.3} s",
+        best_elapsed.expect("At least one repeat; qed").as_secs_f64()
+    );
+
+    Ok(())
+}
+
+/// Run Coremark once from a pristine guest state, print its output and return how long the
+/// interpreter itself took
+fn run_once() -> anyhow::Result<std::time::Duration> {
     let mut memory = GuestMemory::<MEMORY_BASE_ADDRESS, MEMORY_SIZE>::default();
     let LoadedElf {
         entry_point,
@@ -79,8 +113,6 @@ fn main() -> anyhow::Result<()> {
         .write::<u64>(argv_addr, output_buf_addr)
         .context("argv slot does not fit in guest memory")?;
 
-    let host_start = std::time::Instant::now();
-
     let mut regs = BasicRegisters::default();
     regs.write(Reg::Ra, TRAP_ADDRESS);
     regs.write(Reg::Sp, stack_pointer);
@@ -100,6 +132,47 @@ fn main() -> anyhow::Result<()> {
         system_instruction_handler: IllegalEcallSystemInstructionHandler,
     };
 
+    if std::env::var("COREMARK_HISTOGRAM").is_ok() {
+        crate::histogram::histogram(&mut state)?;
+        return Ok(std::time::Duration::ZERO);
+    }
+
+    if let Ok(dispatch) = std::env::var("COREMARK_DISPATCH") {
+        let dispatch = threaded::Dispatch::parse(&dispatch)
+            .with_context(|| format!("Unknown `COREMARK_DISPATCH` value {dispatch}"))?;
+
+        let mut ctx = threaded::Ctx::new(
+            state.instruction_fetcher.instructions(),
+            text_addr,
+            TRAP_ADDRESS,
+            dispatch,
+        );
+
+        load_elf(COREMARK_ELF, ctx.as_mut())?;
+        ctx.write_u64(argv_addr, output_buf_addr);
+        ctx.set_reg(Reg::Ra, TRAP_ADDRESS);
+        ctx.set_reg(Reg::Sp, stack_pointer);
+        ctx.set_reg(Reg::Gp, global_pointer);
+        ctx.set_reg(Reg::A0, 1);
+        ctx.set_reg(Reg::A1, argv_addr);
+
+        let host_start = std::time::Instant::now();
+        let stop = ctx.run(dispatch, entry_point);
+        let host_elapsed = host_start.elapsed();
+
+        if stop != threaded::Stop::Done {
+            return Err(anyhow::anyhow!("Threaded execution failed: {stop:?}"));
+        }
+
+        let output = read_output(ctx.as_ref(), output_buf_addr, output_buf_size)
+            .context("Coremark output not found in guest memory")?;
+        print!("{output}");
+
+        return Ok(host_elapsed);
+    }
+
+    let host_start = std::time::Instant::now();
+
     state.execute().context("Coremark execution failed")?;
 
     let host_elapsed = host_start.elapsed();
@@ -108,7 +181,5 @@ fn main() -> anyhow::Result<()> {
         .context("Coremark output not found in guest memory")?;
     print!("{output}");
 
-    println!("Host elapsed: {:.3} s", host_elapsed.as_secs_f64());
-
-    Ok(())
+    Ok(host_elapsed)
 }
