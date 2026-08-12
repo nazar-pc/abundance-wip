@@ -26,29 +26,18 @@ ab-riscv-macros = { workspace = true, features = ["build"] }
 
 [features]
 default = [
-    "dispatch-match",
-    "dispatch-call",
-    "dispatch-tail",
-    "dispatch-plaintail",
-    "dispatch-safe-basic",
-    "dispatch-safe-branchless",
-    "dispatch-safe-zerostore",
+    "dispatch-basic",
+    "dispatch-branchless",
+    "dispatch-zerostore",
 ]
-# One dispatch back end per feature. Each compiles its own set of ~150 per-instruction handler
-# functions, and when several are compiled together their handlers end up interleaved in the text
-# section, multiplying the instruction-cache footprint of each. For benchmarking, build exactly one
-# with `--no-default-features --features dispatch-<name>`.
-dispatch-match = []
-dispatch-call = []
-dispatch-tail = []
-dispatch-plaintail = []
-# Shared machinery for the safe back ends. The three below differ only in the register file the
-# handlers are instantiated with, and each instantiation is a separate monomorphization of all ~150
-# handlers, so they need separating too.
-dispatch-safe = []
-dispatch-safe-basic = ["dispatch-safe"]
-dispatch-safe-branchless = ["dispatch-safe"]
-dispatch-safe-zerostore = ["dispatch-safe"]
+# Which register file the tail-threaded handlers are instantiated with. Each instantiation is a
+# separate monomorphization of all ~150 per-instruction handlers, and when several are compiled
+# together their handlers end up interleaved in the text section, multiplying the instruction-cache
+# footprint of each. For benchmarking, build exactly one with
+# `--no-default-features --features dispatch-<name>`.
+dispatch-basic = []
+dispatch-branchless = []
+dispatch-zerostore = []
 # This feature makes ELF building required, but not enabled by default to avoid requiring `riscv64-unknown-elf-gcc` for
 # everyone who tries to compile other parts of this repo
 build-elf-required = []

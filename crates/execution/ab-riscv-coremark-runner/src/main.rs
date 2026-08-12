@@ -9,26 +9,22 @@
     signed_bigint_helpers,
     try_blocks
 )]
-
-// Benchmarking builds enable a single `dispatch-*` feature so that only one back end's handlers
-// end up in the binary. In those configurations most of the shared scaffolding is genuinely
-// unused; the default build has every back end enabled and still lints normally.
+// Benchmarking builds enable a single `dispatch-*` register file feature so that only one
+// monomorphization of the handlers ends up in the binary. In those configurations some of the
+// shared scaffolding is genuinely unused; the default build has every register file enabled and
+// still lints normally.
 #![cfg_attr(
     not(all(
-        feature = "dispatch-match",
-        feature = "dispatch-call",
-        feature = "dispatch-tail",
-        feature = "dispatch-plaintail",
-        feature = "dispatch-safe-basic",
-        feature = "dispatch-safe-branchless",
-        feature = "dispatch-safe-zerostore",
+        feature = "dispatch-basic",
+        feature = "dispatch-branchless",
+        feature = "dispatch-zerostore",
     )),
     allow(
         dead_code,
         unused_imports,
         unused_macros,
         unreachable_code,
-        reason = "Single back end benchmarking builds do not use every helper"
+        reason = "Single configuration benchmarking builds do not use every helper"
     )
 )]
 
@@ -106,7 +102,9 @@ fn main() -> anyhow::Result<()> {
 
     println!(
         "Host elapsed: {:.3} s",
-        best_elapsed.expect("At least one repeat; qed").as_secs_f64()
+        best_elapsed
+            .expect("At least one repeat; qed")
+            .as_secs_f64()
     );
 
     Ok(())
@@ -171,15 +169,13 @@ fn run_once() -> anyhow::Result<std::time::Duration> {
         let dispatch = threaded::Dispatch::parse(&dispatch)
             .with_context(|| format!("Unknown `COREMARK_DISPATCH` value {dispatch}"))?;
 
-        if let Some(host_elapsed) = run_safe_dispatch(dispatch, &mut state, &setup)? {
-            let output = read_output(&state.memory, output_buf_addr, output_buf_size)
-                .context("Coremark output not found in guest memory")?;
-            print!("{output}");
+        let host_elapsed = run_threaded_dispatch(dispatch, &mut state, &setup)?;
 
-            return Ok(host_elapsed);
-        }
+        let output = read_output(&state.memory, output_buf_addr, output_buf_size)
+            .context("Coremark output not found in guest memory")?;
+        print!("{output}");
 
-        return run_raw_dispatch(dispatch, &state, &setup, output_buf_addr, output_buf_size);
+        return Ok(host_elapsed);
     }
 
     let host_start = std::time::Instant::now();
@@ -213,37 +209,40 @@ struct Setup {
     entry_point: u64,
 }
 
-/// Run one of the safe back ends, or return `None` if `dispatch` is not one of them.
+/// Run the tail-threaded back end with the register file `dispatch` names.
 ///
-/// They differ only in which register file they are instantiated with, which is the point: the
-/// handlers are generic over it.
-#[cfg_attr(not(feature = "dispatch-safe"), expect(unused_variables, reason = "Not compiled in"))]
-fn run_safe_dispatch(
+/// The register files differ only in which type parameter the handlers are instantiated with,
+/// which is the point: the handlers are generic over it.
+fn run_threaded_dispatch(
     dispatch: threaded::Dispatch,
     state: &mut CoremarkState,
     setup: &Setup,
-) -> anyhow::Result<Option<std::time::Duration>> {
-    let host_elapsed = match dispatch {
-        #[cfg(feature = "dispatch-safe-basic")]
-        threaded::Dispatch::Safe => run_safe_with::<BasicRegisters<Reg<u64>>>(state, setup)?,
-        #[cfg(feature = "dispatch-safe-branchless")]
-        threaded::Dispatch::SafeBranchless => {
-            run_safe_with::<threaded::BranchlessRegisters>(state, setup)?
+) -> anyhow::Result<std::time::Duration> {
+    match dispatch {
+        #[cfg(feature = "dispatch-basic")]
+        threaded::Dispatch::Basic => run_threaded_with::<BasicRegisters<Reg<u64>>>(state, setup),
+        #[cfg(feature = "dispatch-branchless")]
+        threaded::Dispatch::Branchless => {
+            run_threaded_with::<threaded::BranchlessRegisters>(state, setup)
         }
-        #[cfg(feature = "dispatch-safe-zerostore")]
-        threaded::Dispatch::SafeZeroStore => {
-            run_safe_with::<threaded::ZeroStoreRegisters>(state, setup)?
+        #[cfg(feature = "dispatch-zerostore")]
+        threaded::Dispatch::ZeroStore => {
+            run_threaded_with::<threaded::ZeroStoreRegisters>(state, setup)
         }
-        _ => return Ok(None),
-    };
-
-    Ok(Some(host_elapsed))
+        #[cfg(not(all(
+            feature = "dispatch-basic",
+            feature = "dispatch-branchless",
+            feature = "dispatch-zerostore"
+        )))]
+        _ => Err(anyhow::anyhow!(
+            "Register file not compiled in, enable its feature"
+        )),
+    }
 }
 
-/// Run the safe back end with a specific register file, borrowing memory and the decoded stream
-/// out of the state that owns them
-#[cfg(feature = "dispatch-safe")]
-fn run_safe_with<Regs>(
+/// Run the tail-threaded back end with a specific register file, borrowing memory and the decoded
+/// stream out of the state that owns them
+fn run_threaded_with<Regs>(
     state: &mut CoremarkState,
     setup: &Setup,
 ) -> anyhow::Result<std::time::Duration>
@@ -264,7 +263,7 @@ where
     } = state;
 
     let host_start = std::time::Instant::now();
-    let stop = threaded::run_safe(
+    let stop = threaded::run_threaded(
         instruction_fetcher.instructions(),
         setup.text_addr,
         TRAP_ADDRESS,
@@ -279,67 +278,4 @@ where
     }
 
     Ok(host_elapsed)
-}
-
-/// Run one of the raw-pointer back ends, which build their own `Ctx` owning a copy of guest memory
-#[cfg(any(
-    feature = "dispatch-match",
-    feature = "dispatch-call",
-    feature = "dispatch-tail",
-    feature = "dispatch-plaintail"
-))]
-fn run_raw_dispatch(
-    dispatch: threaded::Dispatch,
-    state: &CoremarkState,
-    setup: &Setup,
-    output_buf_addr: u64,
-    output_buf_size: u32,
-) -> anyhow::Result<std::time::Duration> {
-    let mut ctx = threaded::Ctx::new(
-        state.instruction_fetcher.instructions(),
-        setup.text_addr,
-        TRAP_ADDRESS,
-        dispatch,
-    );
-
-    load_elf(COREMARK_ELF, ctx.as_mut())?;
-    ctx.write_u64(setup.argv_addr, output_buf_addr);
-    ctx.set_reg(Reg::Ra, TRAP_ADDRESS);
-    ctx.set_reg(Reg::Sp, setup.stack_pointer);
-    ctx.set_reg(Reg::Gp, setup.global_pointer);
-    ctx.set_reg(Reg::A0, 1);
-    ctx.set_reg(Reg::A1, setup.argv_addr);
-
-    let host_start = std::time::Instant::now();
-    let stop = ctx.run(dispatch, setup.entry_point);
-    let host_elapsed = host_start.elapsed();
-
-    if stop != threaded::Stop::Done {
-        return Err(anyhow::anyhow!("Threaded execution failed: {stop:?}"));
-    }
-
-    let output = read_output(ctx.as_ref(), output_buf_addr, output_buf_size)
-        .context("Coremark output not found in guest memory")?;
-    print!("{output}");
-
-    Ok(host_elapsed)
-}
-
-/// The requested back end was not compiled in
-#[cfg(not(any(
-    feature = "dispatch-match",
-    feature = "dispatch-call",
-    feature = "dispatch-tail",
-    feature = "dispatch-plaintail"
-)))]
-fn run_raw_dispatch(
-    _dispatch: threaded::Dispatch,
-    _state: &CoremarkState,
-    _setup: &Setup,
-    _output_buf_addr: u64,
-    _output_buf_size: u32,
-) -> anyhow::Result<std::time::Duration> {
-    Err(anyhow::anyhow!(
-        "Dispatch back end not compiled in, enable its feature"
-    ))
 }

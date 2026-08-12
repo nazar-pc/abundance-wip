@@ -1,37 +1,50 @@
-//! Dispatch-style experiments over the pre-decoded instruction stream.
+//! Tail-call-threaded dispatch over the pre-decoded instruction stream.
 //!
-//! Every variant in here executes the *same* instruction semantics, expressed once in the
-//! [`ops!`] table below. Only the way control gets from one instruction to the next differs:
-//!
-//! * [`run_match`] — one big `match` over the discriminant, each arm advancing the instruction
-//!   pointer itself (this is the "specialized match loop")
-//! * [`run_call`] — one function per instruction, reached through a function pointer table, called
-//!   from a driver loop
-//! * [`run_tail`] — the same functions, chained with guaranteed tail calls (`become`)
-//! * [`run_plain_tail`] — the same again, but with an ordinary call in tail position, to check
-//!   whether the unstable `explicit_tail_calls` feature is actually needed to get sibling calls
-//!
-//! All three do far less work per instruction than the generic `BasicInterpreterState::execute()`
-//! loop, because each instruction knows statically how wide it is, which operands it actually
+//! One handler function per instruction variant, generated from the single [`ops!`] table below,
+//! chained with guaranteed tail calls (`become`) so that a handler never returns to a driver loop.
+//! Handlers do far less work per instruction than the generic `BasicInterpreterState::execute()`
+//! loop, because each one knows statically how wide its instruction is, which operands it actually
 //! needs, and whether it can branch at all. The generic loop cannot know any of that, so it pays
 //! for the union of what every instruction might need before it dispatches.
 //!
-//! Select one with `COREMARK_DISPATCH=match|call|tail|plaintail`; leaving it unset runs the
-//! generic loop.
+//! Nothing here is specialized to this runner's concrete types and no handler contains `unsafe`:
+//!
+//! * registers go through `RegisterFile`, memory through `VirtualMemory`, so both are generic and
+//!   *borrowed* rather than owned by a state struct
+//! * the components are passed as separate arguments rather than bundled behind one pointer, so
+//!   each one stays in its own argument register across a tail call instead of being reloaded
+//! * the instruction pointer is a `&I` newtype rather than a raw pointer, and stopping is expressed
+//!   with `Option` rather than a null pointer
+//!
+//! The unsafe surface is two one-line helpers ([`Ip::advance`] and [`Ip::discriminant`]), both in
+//! this scaffolding rather than in generated per-instruction code.
+//!
+//! One axis is left open, because it is the one still worth measuring: **the register file**. It
+//! is a type parameter, selected by the `dispatch-basic`, `dispatch-branchless` and
+//! `dispatch-zerostore` features and named at run time by
+//! `COREMARK_DISPATCH=basic|branchless|zerostore`.
+//!
+//! Leaving `COREMARK_DISPATCH` unset runs the generic loop, which is the baseline to compare
+//! against.
+//!
+//! Dispatch strategies that were measured and lost are not here; see the git history of this file
+//! for the raw-pointer `match`, `call`, `become` and plain-tail-call back ends.
 
 use crate::instruction::CoremarkInstruction as I;
 use ab_riscv_interpreter::basic::BasicRegister;
 use ab_riscv_interpreter::prelude::*;
 use ab_riscv_primitives::prelude::*;
 use core::hint::{cold_path, unreachable_unchecked};
-#[cfg(feature = "dispatch-safe")]
 use core::marker::PhantomData;
 use std::time::Instant;
 
 /// Register type used by the Coremark runner
 type R = Reg<u64>;
 
-/// Number of variants in `CoremarkInstruction`, i.e. the size of the dispatch table
+/// Size of the dispatch table.
+///
+/// The index is a `u8` (see [`Ip::discriminant`]), so a table this size is indexable without a
+/// bounds check and without `unsafe`.
 const VARIANTS: usize = 256;
 
 /// Why execution stopped
@@ -47,234 +60,9 @@ pub(crate) enum Stop {
     IllegalInstruction,
     /// CSR access this runner does not implement
     UnsupportedCsr(u16),
-    /// Discriminant that never appeared in the decoded stream, so no handler was installed for
-    /// it. Only reachable if the stream is modified after [`Ctx::new()`].
+    /// Discriminant with no handler in the dispatch table. Unreachable as long as the [`ops!`]
+    /// table stays exhaustive over `CoremarkInstruction`, which it is checked to be.
     Unsupported(u16),
-}
-
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
-/// Result of a handler: the instruction pointer to continue at, or null when execution stopped (in
-/// which case the reason is in [`Ctx::stop`]).
-type Next = *const I;
-
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
-/// A single instruction handler
-type Handler = fn(*const I, &mut Ctx) -> Next;
-
-/// Filler for discriminants that never appear in the decoded stream, so that the dispatch table is
-/// fully initialized before it is populated from the program
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
-fn unsupported(ip: *const I, ctx: &mut Ctx) -> Next {
-    cold_path();
-    // SAFETY: `ip` points at a valid instruction
-    ctx.stop = Stop::Unsupported(unsafe { discriminant(ip) });
-    core::ptr::null()
-}
-
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
-/// Interpreter state, laid out as one contiguous block so that a single base pointer reaches
-/// memory, registers and everything else
-#[repr(C, align(64))]
-pub(crate) struct Ctx {
-    /// Guest RAM. Guest base address is zero, so a guest address is directly an index here.
-    pub(crate) mem: [u8; crate::MEMORY_SIZE],
-    /// GPRs. Slot 32 is a sink that writes to `x0` are redirected into, which keeps slot 0 zero
-    /// forever and lets reads be unconditional.
-    regs: [u64; 33],
-    /// Start of the decoded instruction stream
-    base: *const I,
-    /// Length of the decoded instruction stream, in slots
-    slots: usize,
-    /// Guest address the decoded instruction stream starts at
-    base_addr: u64,
-    /// Guest address that stops execution when jumped to
-    return_trap: u64,
-    /// Discriminant-indexed handler table, used by [`run_call`] and [`run_tail`]
-    handlers: [Handler; VARIANTS],
-    /// For the `time` CSR
-    start: Instant,
-    /// Why execution stopped
-    pub(crate) stop: Stop,
-}
-
-/// Read the `#[repr(u16)]` discriminant of an instruction
-///
-/// # Safety
-/// `instruction` must point at a valid instruction inside the decoded stream.
-#[inline(always)]
-unsafe fn discriminant(instruction: *const I) -> u16 {
-    // SAFETY: the enum is `#[repr(u16)]`, so its first two bytes are the discriminant
-    unsafe { instruction.cast::<u16>().read() }
-}
-
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
-macro_rules! reg_read {
-    ($ctx:ident, $reg:expr) => {
-        // SAFETY: register offsets are always below 32
-        *unsafe { $ctx.regs.get_unchecked(usize::from(BasicRegister::offset($reg))) }
-    };
-}
-
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
-macro_rules! reg_write {
-    ($ctx:ident, $reg:expr, $value:expr) => {{
-        let offset = usize::from(BasicRegister::offset($reg));
-        // Branchless discard of writes to `x0`: they land in the sink slot instead
-        let offset = if offset == 0 { 32 } else { offset };
-        // SAFETY: offset is always below 33
-        *unsafe { $ctx.regs.get_unchecked_mut(offset) } = $value;
-    }};
-}
-
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
-macro_rules! mem_read {
-    ($ctx:ident, $ty:ty, $addr:expr) => {{
-        let addr = $addr;
-        if addr.saturating_add(size_of::<$ty>() as u64) > crate::MEMORY_SIZE as u64 {
-            cold_path();
-            $ctx.stop = Stop::OutOfBounds;
-            return core::ptr::null();
-        }
-        // SAFETY: bounds were just checked, and only plain integers are read
-        unsafe {
-            $ctx.mem
-                .as_ptr()
-                .cast::<$ty>()
-                .byte_add(addr as usize)
-                .read_unaligned()
-        }
-    }};
-}
-
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
-macro_rules! mem_write {
-    ($ctx:ident, $ty:ty, $addr:expr, $value:expr) => {{
-        let addr = $addr;
-        let value = $value;
-        if addr.saturating_add(size_of::<$ty>() as u64) > crate::MEMORY_SIZE as u64 {
-            cold_path();
-            $ctx.stop = Stop::OutOfBounds;
-            return core::ptr::null();
-        }
-        // SAFETY: bounds were just checked, and only plain integers are written
-        unsafe {
-            $ctx.mem
-                .as_mut_ptr()
-                .cast::<$ty>()
-                .byte_add(addr as usize)
-                .write_unaligned(value);
-        }
-    }};
-}
-
-/// Read of the `time` CSR into `$rd`, provided the access really is a pure read of it
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
-macro_rules! csr_read {
-    ($ctx:ident, $rd:expr, $csr_index:expr, $write_operand:expr) => {{
-        const CSR_TIME: u16 = 0xC01;
-
-        // `time` is read-only, so a set/clear with a non-zero operand is an attempted write
-        if $csr_index != CSR_TIME || $write_operand != 0 {
-            cold_path();
-            $ctx.stop = Stop::UnsupportedCsr($csr_index);
-            return core::ptr::null();
-        }
-
-        let elapsed = $ctx.start.elapsed().as_nanos() as u64;
-        reg_write!($ctx, $rd, elapsed);
-    }};
-}
-
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
-macro_rules! csr_illegal {
-    ($ctx:ident) => {{
-        cold_path();
-        $ctx.stop = Stop::UnsupportedCsr(0);
-        return core::ptr::null();
-    }};
-}
-
-/// Stop execution with the given reason
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
-macro_rules! trap {
-    ($ctx:ident, $stop:ident) => {{
-        cold_path();
-        $ctx.stop = Stop::$stop;
-        return core::ptr::null();
-    }};
-}
-
-/// Guest address of the instruction `$ip` points at.
-///
-/// Every two bytes of guest code get one slot in the decoded stream, hence the shift by two rather
-/// than by three.
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
-macro_rules! current_pc {
-    ($ctx:ident, $ip:ident) => {
-        $ctx.base_addr
-            .wrapping_add((($ip as usize - $ctx.base as usize) >> 2) as u64)
-    };
-}
-
-/// Instruction pointer for a PC-relative jump by `$imm` guest bytes.
-///
-/// PC-relative targets stay inside the decoded stream, so this is pointer arithmetic plus a bounds
-/// check rather than the full address-to-slot conversion [`jump_absolute`] has to do.
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
-macro_rules! jump_relative {
-    ($ctx:ident, $ip:ident, $imm:expr) => {{
-        // Two guest bytes per 8-byte slot, so one guest byte is four bytes of stream
-        let byte_offset = (i64::from($imm) as isize).wrapping_mul(4);
-        // SAFETY: the result is bounds-checked below before it is ever dereferenced
-        let target = unsafe { $ip.byte_offset(byte_offset) };
-
-        if (target as usize) < ($ctx.base as usize)
-            || (target as usize) >= ($ctx.base as usize + $ctx.slots * size_of::<I>())
-        {
-            cold_path();
-            $ctx.stop = Stop::BadJump;
-            return core::ptr::null();
-        }
-
-        target
-    }};
-}
-
-/// Instruction pointer for a jump to absolute guest address `$target`
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
-macro_rules! jump_absolute {
-    ($ctx:ident, $target:expr) => {{
-        let target = $target;
-
-        if target == $ctx.return_trap {
-            cold_path();
-            $ctx.stop = Stop::Done;
-            return core::ptr::null();
-        }
-
-        let Some(offset) = target.checked_sub($ctx.base_addr) else {
-            cold_path();
-            $ctx.stop = Stop::BadJump;
-            return core::ptr::null();
-        };
-
-        if !offset.is_multiple_of(size_of::<u16>() as u64) {
-            cold_path();
-            $ctx.stop = Stop::BadJump;
-            return core::ptr::null();
-        }
-
-        let slot = (offset / size_of::<u16>() as u64) as usize;
-
-        if slot >= $ctx.slots {
-            cold_path();
-            $ctx.stop = Stop::BadJump;
-            return core::ptr::null();
-        }
-
-        // SAFETY: slot was just bounds-checked
-        unsafe { $ctx.base.add(slot) }
-    }};
 }
 
 /// The instruction table.
@@ -483,446 +271,46 @@ macro_rules! ops {
 // Variant 1: one big `match`, each arm advancing the instruction pointer itself
 // --------------------------------------------------------------------------------------------
 
-#[cfg(feature = "dispatch-match")]
-macro_rules! emit_match {
-    (
-        $ctx:ident, $ip:ident, $next:ident,
-        $($name:ident, $slots:expr, { $($field:ident),* $(,)? }, $body:block);* $(;)?
-    ) => {
-        fn run_match($ctx: &mut Ctx, mut $ip: *const I) -> Next {
-            loop {
-                // SAFETY: `ip` always points at a valid slot of the decoded stream
-                match unsafe { *$ip } {
-                    $(
-                        #[allow(
-                            unused_variables,
-                            unreachable_code,
-                            reason = "Unconditional jumps do not use the advanced pointer, and \
-                                trapping instructions never reach it"
-                        )]
-                        I::$name { $($field,)* .. } => {
-                            // SAFETY: the stream ends with a jump, so advancing stays in bounds
-                            let $next = unsafe { $ip.add($slots) };
-                            $ip = $body;
-                        }
-                    )*
-                }
-            }
-        }
-    };
-}
-
-#[cfg(feature = "dispatch-match")]
-ops!(emit_match);
-
-// --------------------------------------------------------------------------------------------
-// Variants 2-4: one function per instruction
-// --------------------------------------------------------------------------------------------
-
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call"))]
-macro_rules! emit_handlers {
-    (
-        $ctx:ident, $ip:ident, $next:ident,
-        $($name:ident, $slots:expr, { $($field:ident),* $(,)? }, $body:block);* $(;)?
-    ) => {
-        mod handlers {
-            use super::*;
-
-            $(
-                #[expect(non_snake_case, reason = "One handler per instruction variant")]
-                #[allow(
-                    unused_variables,
-                    unreachable_code,
-                    reason = "Unconditional jumps do not use the advanced pointer, and trapping \
-                        instructions never reach it"
-                )]
-                pub(super) fn $name($ip: *const I, $ctx: &mut Ctx) -> Next {
-                    // SAFETY: `ip` points at a slot holding exactly this variant, which is how
-                    // this handler was selected in the first place
-                    let I::$name { $($field,)* .. } = (unsafe { *$ip }) else {
-                        // SAFETY: guaranteed by handler selection
-                        unsafe { unreachable_unchecked() }
-                    };
-                    // SAFETY: the stream ends with a jump, so advancing stays in bounds
-                    let $next = unsafe { $ip.add($slots) };
-                    $body
-                }
-            )*
-
-        }
-
-        /// Pick the handler for an already decoded instruction
-        fn handler_for(instruction: I) -> Handler {
-            match instruction {
-                $( I::$name { .. } => handlers::$name as Handler, )*
-            }
-        }
-    };
-}
-
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call"))]
-ops!(emit_handlers);
-
-#[cfg(feature = "dispatch-tail")]
-macro_rules! emit_tail_handlers {
-    (
-        $ctx:ident, $ip:ident, $next:ident,
-        $($name:ident, $slots:expr, { $($field:ident),* $(,)? }, $body:block);* $(;)?
-    ) => {
-        mod tail_handlers {
-            use super::*;
-
-            $(
-                #[expect(non_snake_case, reason = "One handler per instruction variant")]
-                #[allow(
-                    unused_variables,
-                    unreachable_code,
-                    reason = "Unconditional jumps do not use the advanced pointer, and trapping \
-                        instructions never reach it"
-                )]
-                pub(super) fn $name($ip: *const I, $ctx: &mut Ctx) -> Next {
-                    // SAFETY: `ip` points at a slot holding exactly this variant, which is how
-                    // this handler was selected in the first place
-                    let I::$name { $($field,)* .. } = (unsafe { *$ip }) else {
-                        // SAFETY: guaranteed by handler selection
-                        unsafe { unreachable_unchecked() }
-                    };
-                    // SAFETY: the stream ends with a jump, so advancing stays in bounds
-                    let $next = unsafe { $ip.add($slots) };
-                    let $next = $body;
-                    // Every path that stops execution returns early, so `next` is always a valid
-                    // instruction here
-                    let handler = dispatch($ctx, $next);
-                    become handler($next, $ctx)
-                }
-            )*
-
-        }
-
-        /// Pick the tail-calling handler for an already decoded instruction
-        fn tail_handler_for(instruction: I) -> Handler {
-            match instruction {
-                $( I::$name { .. } => tail_handlers::$name as Handler, )*
-            }
-        }
-    };
-}
-
-#[cfg(feature = "dispatch-plaintail")]
-macro_rules! emit_plain_tail_handlers {
-    (
-        $ctx:ident, $ip:ident, $next:ident,
-        $($name:ident, $slots:expr, { $($field:ident),* $(,)? }, $body:block);* $(;)?
-    ) => {
-        mod plain_tail_handlers {
-            use super::*;
-
-            $(
-                #[expect(non_snake_case, reason = "One handler per instruction variant")]
-                #[allow(
-                    unused_variables,
-                    unreachable_code,
-                    reason = "Unconditional jumps do not use the advanced pointer, and trapping \
-                        instructions never reach it"
-                )]
-                pub(super) fn $name($ip: *const I, $ctx: &mut Ctx) -> Next {
-                    // SAFETY: `ip` points at a slot holding exactly this variant, which is how
-                    // this handler was selected in the first place
-                    let I::$name { $($field,)* .. } = (unsafe { *$ip }) else {
-                        // SAFETY: guaranteed by handler selection
-                        unsafe { unreachable_unchecked() }
-                    };
-                    // SAFETY: the stream ends with a jump, so advancing stays in bounds
-                    let $next = unsafe { $ip.add($slots) };
-                    let $next = $body;
-                    // Every path that stops execution returns early, so `next` is always a valid
-                    // instruction here
-                    let handler = dispatch($ctx, $next);
-                    // Deliberately NOT `become`: this measures whether LLVM turns an ordinary
-                    // call in tail position into a sibling call on its own
-                    handler($next, $ctx)
-                }
-            )*
-        }
-
-        /// Pick the plain-call handler for an already decoded instruction
-        fn plain_tail_handler_for(instruction: I) -> Handler {
-            match instruction {
-                $( I::$name { .. } => plain_tail_handlers::$name as Handler, )*
-            }
-        }
-    };
-}
-
-#[cfg(feature = "dispatch-plaintail")]
-ops!(emit_plain_tail_handlers);
-
-#[cfg(feature = "dispatch-tail")]
-ops!(emit_tail_handlers);
-
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
-/// Look up the handler for the instruction at `ip`
-#[inline(always)]
-fn dispatch(ctx: &Ctx, ip: *const I) -> Handler {
-    // SAFETY: `ip` points at a valid instruction and the table covers every discriminant
-    unsafe {
-        *ctx.handlers
-            .get_unchecked(usize::from(discriminant(ip)))
-    }
-}
-
-/// Driver loop calling one handler per instruction through the dispatch table
-#[cfg(feature = "dispatch-call")]
-fn run_call(ctx: &mut Ctx, mut ip: *const I) -> Next {
-    loop {
-        let handler = dispatch(ctx, ip);
-        ip = handler(ip, ctx);
-
-        if ip.is_null() {
-            cold_path();
-            return ip;
-        }
-    }
-}
-
-/// Enter the tail-call-threaded chain
-#[cfg(feature = "dispatch-tail")]
-fn run_tail(ctx: &mut Ctx, ip: *const I) -> Next {
-    let handler = dispatch(ctx, ip);
-    handler(ip, ctx)
-}
-
-/// Enter the chain that relies on LLVM turning tail-position calls into sibling calls
-#[cfg(feature = "dispatch-plaintail")]
-fn run_plain_tail(ctx: &mut Ctx, ip: *const I) -> Next {
-    let handler = dispatch(ctx, ip);
-    handler(ip, ctx)
-}
-
 // --------------------------------------------------------------------------------------------
 // Entry point
 // --------------------------------------------------------------------------------------------
 
-/// Which dispatch strategy to use
+/// Which register file the tail-threaded handlers are instantiated with.
+///
+/// The handlers are generic over it, so these are not separate implementations — the same
+/// generated code, monomorphized three ways.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum Dispatch {
-    /// One big `match` with per-arm instruction pointer advance
-    Match,
-    /// Function pointer table, called from a driver loop
-    Call,
-    /// Function pointer table, chained with guaranteed tail calls
-    Tail,
-    /// Function pointer table, chained with ordinary calls in tail position
-    PlainTail,
-    /// Like `Tail`, but safe and generic: registers and memory go through their traits and are
-    /// borrowed rather than owned, and the components are passed as separate arguments
-    Safe,
-    /// [`Self::Safe`] with [`BranchlessRegisters`] substituted for `BasicRegisters`, to show that
-    /// the same handlers are genuinely generic over the register file
-    SafeBranchless,
-    /// [`Self::Safe`] with [`ZeroStoreRegisters`], which drops the conditional move
-    /// [`BranchlessRegisters`] still needs
-    SafeZeroStore,
+    /// The ordinary `BasicRegisters`, which branches to discard writes to `x0`
+    Basic,
+    /// [`BranchlessRegisters`], which steers writes to `x0` into a sink slot instead of branching
+    Branchless,
+    /// [`ZeroStoreRegisters`], which drops even the conditional move [`BranchlessRegisters`] needs
+    ZeroStore,
 }
 
 impl Dispatch {
     pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
-            #[cfg(feature = "dispatch-match")]
-            "match" => Some(Self::Match),
-            #[cfg(feature = "dispatch-call")]
-            "call" => Some(Self::Call),
-            #[cfg(feature = "dispatch-tail")]
-            "tail" => Some(Self::Tail),
-            #[cfg(feature = "dispatch-plaintail")]
-            "plaintail" => Some(Self::PlainTail),
-            #[cfg(feature = "dispatch-safe-basic")]
-            "safe" => Some(Self::Safe),
-            #[cfg(feature = "dispatch-safe-branchless")]
-            "safebranchless" => Some(Self::SafeBranchless),
-            #[cfg(feature = "dispatch-safe-zerostore")]
-            "safezerostore" => Some(Self::SafeZeroStore),
+            #[cfg(feature = "dispatch-basic")]
+            "basic" => Some(Self::Basic),
+            #[cfg(feature = "dispatch-branchless")]
+            "branchless" => Some(Self::Branchless),
+            #[cfg(feature = "dispatch-zerostore")]
+            "zerostore" => Some(Self::ZeroStore),
             _ => None,
         }
     }
 }
 
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
-impl Ctx {
-    /// Build a context around an already decoded instruction stream
-    pub(crate) fn new(
-        instructions: &[I],
-        base_addr: u64,
-        return_trap: u64,
-        dispatch: Dispatch,
-    ) -> Box<Self> {
-        let mut ctx = Box::<Self>::new_uninit();
-        let ctx_ptr = ctx.as_mut_ptr();
-
-        // SAFETY: writing every field of freshly allocated storage exactly once, without ever
-        // creating a reference to the partially initialized value. Guest RAM is zeroed in place so
-        // that it never goes through a stack temporary.
-        let mut ctx = unsafe {
-            core::ptr::write_bytes(
-                (&raw mut (*ctx_ptr).mem).cast::<u8>(),
-                0,
-                crate::MEMORY_SIZE,
-            );
-            (&raw mut (*ctx_ptr).regs).write([0; 33]);
-            (&raw mut (*ctx_ptr).base).write(instructions.as_ptr());
-            (&raw mut (*ctx_ptr).slots).write(instructions.len());
-            (&raw mut (*ctx_ptr).base_addr).write(base_addr);
-            (&raw mut (*ctx_ptr).return_trap).write(return_trap);
-            (&raw mut (*ctx_ptr).handlers).write([unsupported as Handler; VARIANTS]);
-            (&raw mut (*ctx_ptr).start).write(Instant::now());
-            (&raw mut (*ctx_ptr).stop).write(Stop::Done);
-            ctx.assume_init()
-        };
-
-        // The dispatch table is filled in from the program itself: every discriminant that can
-        // ever be dispatched appears in the decoded stream, so a single pass over it is enough and
-        // no discriminant values need to be hardcoded anywhere
-        for &instruction in instructions {
-            // SAFETY: the enum is `#[repr(u16)]`
-            let discriminant = usize::from(unsafe { discriminant(&raw const instruction) });
-            ctx.handlers[discriminant] = match dispatch {
-                #[cfg(feature = "dispatch-tail")]
-                Dispatch::Tail => tail_handler_for(instruction),
-                #[cfg(feature = "dispatch-plaintail")]
-                Dispatch::PlainTail => plain_tail_handler_for(instruction),
-                #[cfg(any(feature = "dispatch-match", feature = "dispatch-call"))]
-                Dispatch::Match | Dispatch::Call => handler_for(instruction),
-                _ => unsupported,
-            };
-        }
-
-        ctx
-    }
-
-    pub(crate) fn write_u64(&mut self, address: u64, value: u64) {
-        self.mem[address as usize..][..size_of::<u64>()].copy_from_slice(&value.to_le_bytes());
-    }
-
-    pub(crate) fn set_reg(&mut self, reg: R, value: u64) {
-        reg_write!(self, reg, value);
-    }
-
-    /// Run the program from `pc`
-    pub(crate) fn run(&mut self, dispatch: Dispatch, pc: u64) -> Stop {
-        let slot = ((pc - self.base_addr) / size_of::<u16>() as u64) as usize;
-        // SAFETY: caller passes an in-bounds program counter
-        let ip = unsafe { self.base.add(slot) };
-
-        self.stop = Stop::Done;
-        self.start = Instant::now();
-
-        let ctx = &mut *self;
-        match dispatch {
-            #[cfg(feature = "dispatch-match")]
-            Dispatch::Match => run_match(ctx, ip),
-            #[cfg(feature = "dispatch-call")]
-            Dispatch::Call => run_call(ctx, ip),
-            #[cfg(feature = "dispatch-tail")]
-            Dispatch::Tail => run_tail(ctx, ip),
-            #[cfg(feature = "dispatch-plaintail")]
-            Dispatch::PlainTail => run_plain_tail(ctx, ip),
-            // The safe back ends are handled before a `Ctx` is ever built, they borrow the
-            // caller's components instead
-            _ => unreachable!("Not compiled in"),
-        };
-
-        self.stop
-    }
-}
-
-#[cfg(any(feature = "dispatch-match", feature = "dispatch-call", feature = "dispatch-tail", feature = "dispatch-plaintail"))]
-/// Only the parts of the interface that setting up and inspecting the guest needs; the interpreter
-/// itself goes straight at [`Ctx::mem`]
-impl VirtualMemory for Ctx {
-    fn read<T>(&self, _address: u64) -> Result<T, VirtualMemoryError>
-    where
-        T: BasicInt,
-    {
-        unimplemented!("Not used during setup")
-    }
-
-    unsafe fn read_unchecked<T>(&self, _address: u64) -> T
-    where
-        T: BasicInt,
-    {
-        unimplemented!("Not used during setup")
-    }
-
-    fn read_slice(&self, _address: u64, _len: u32) -> Result<&[u8], VirtualMemoryError> {
-        unimplemented!("Not used during setup")
-    }
-
-    fn read_slice_up_to(&self, address: u64, len: u32) -> &[u8] {
-        let Some(remaining) = self.mem.get(address as usize..) else {
-            return &[];
-        };
-        remaining.get(..len as usize).unwrap_or(remaining)
-    }
-
-    fn write<T>(&mut self, address: u64, value: T) -> Result<(), VirtualMemoryError>
-    where
-        T: BasicInt,
-    {
-        let Some(target) = self
-            .mem
-            .get_mut(address as usize..)
-            .and_then(|data| data.get_mut(..size_of::<T>()))
-        else {
-            return Err(VirtualMemoryError::OutOfBoundsWrite { address });
-        };
-
-        // SAFETY: bounds were just checked, and only plain integers are written
-        unsafe {
-            target.as_mut_ptr().cast::<T>().write_unaligned(value);
-        }
-
-        Ok(())
-    }
-
-    fn write_slice(&mut self, address: u64, data: &[u8]) -> Result<(), VirtualMemoryError> {
-        let Some(target) = self
-            .mem
-            .get_mut(address as usize..)
-            .and_then(|data_slot| data_slot.get_mut(..data.len()))
-        else {
-            return Err(VirtualMemoryError::OutOfBoundsWrite { address });
-        };
-
-        target.copy_from_slice(data);
-
-        Ok(())
-    }
-}
-
 // --------------------------------------------------------------------------------------------
-// Variant 5: safe and generic
-//
-// Same instruction table, but nothing here is specialized to this runner's concrete types and no
-// handler contains `unsafe`:
-//
-// * registers go through `RegisterFile`, memory through `VirtualMemory`, so both are generic and
-//   *borrowed* rather than owned by a state struct
-// * the components are passed as separate arguments rather than bundled behind one pointer, so
-//   each one stays in its own argument register across a tail call instead of being reloaded
-// * the instruction pointer is a `&I` newtype rather than a raw pointer, and stopping is expressed
-//   as `Result` rather than a null pointer
-//
-// The unsafe surface is three one-line helpers (`Ip::advance`, `Ip::discriminant`, and the
-// `Ip::new` invariant), all of it in this scaffolding rather than in generated per-instruction
-// code.
+// Handlers
 // --------------------------------------------------------------------------------------------
 
-#[cfg(feature = "dispatch-safe")]
 /// Position in the decoded instruction stream
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct Ip<'a>(&'a I);
 
-#[cfg(feature = "dispatch-safe")]
 /// The decoded program, plus what is needed to turn a guest address into a position in it.
 ///
 /// This is the equivalent of an instruction fetcher: it is borrowed by the interpreter, not owned.
@@ -933,7 +321,6 @@ pub(crate) struct Stream<'a> {
     return_trap: u64,
 }
 
-#[cfg(feature = "dispatch-safe")]
 /// Stand-in for extension state.
 ///
 /// Also carries why execution stopped, so that a handler can return just an instruction pointer.
@@ -945,23 +332,23 @@ pub(crate) struct Ext {
     stop: Stop,
 }
 
-#[cfg(feature = "dispatch-safe")]
 /// Stand-in for a system instruction handler, present so that the handler signature carries the
 /// same six arguments a real implementation would need
 #[derive(Debug)]
 pub(crate) struct Sys;
 
-#[cfg(feature = "dispatch-safe")]
 /// Result of a handler: where to continue, or `None` when execution stopped, in which case the
 /// reason is in [`Ext::stop`]. `Option<Ip>` is pointer-sized thanks to the null niche, so it comes
 /// back in a register.
 type SafeNext<'a> = Option<Ip<'a>>;
 
-#[cfg(feature = "dispatch-safe")]
+/// A single instruction handler.
+///
+/// Six arguments, which is exactly the number of integer argument registers x86-64 SysV has, so
+/// nothing spills.
 type SafeHandler<Regs, Memory> =
     for<'a> fn(Ip<'a>, &mut Regs, &mut Memory, &mut Ext, &Stream<'a>, &mut Sys) -> SafeNext<'a>;
 
-#[cfg(feature = "dispatch-safe")]
 impl<'a> Ip<'a> {
     /// Position of the instruction at guest address `address`
     #[inline(always)]
@@ -1017,7 +404,6 @@ impl<'a> Ip<'a> {
     }
 }
 
-#[cfg(feature = "dispatch-safe")]
 /// The borrowed components, reassembled from the handler arguments.
 ///
 /// Purely a naming convenience for the instruction table: it is a local whose address never
@@ -1047,7 +433,6 @@ macro_rules! reg_write {
 }
 
 /// Record why execution stopped and unwind out of the handler chain
-#[cfg(feature = "dispatch-safe")]
 macro_rules! stop {
     ($ctx:ident, $stop:expr) => {{
         cold_path();
@@ -1056,7 +441,6 @@ macro_rules! stop {
     }};
 }
 
-#[cfg(feature = "dispatch-safe")]
 macro_rules! mem_read {
     ($ctx:ident, $ty:ty, $addr:expr) => {
         match VirtualMemory::read::<$ty>($ctx.memory, $addr) {
@@ -1066,7 +450,6 @@ macro_rules! mem_read {
     };
 }
 
-#[cfg(feature = "dispatch-safe")]
 macro_rules! mem_write {
     ($ctx:ident, $ty:ty, $addr:expr, $value:expr) => {
         match VirtualMemory::write::<$ty>($ctx.memory, $addr, $value) {
@@ -1076,7 +459,6 @@ macro_rules! mem_write {
     };
 }
 
-#[cfg(feature = "dispatch-safe")]
 macro_rules! csr_read {
     ($ctx:ident, $rd:expr, $csr_index:expr, $write_operand:expr) => {{
         const CSR_TIME: u16 = 0xC01;
@@ -1090,21 +472,18 @@ macro_rules! csr_read {
     }};
 }
 
-#[cfg(feature = "dispatch-safe")]
 macro_rules! csr_illegal {
     ($ctx:ident) => {
         stop!($ctx, Stop::UnsupportedCsr(0))
     };
 }
 
-#[cfg(feature = "dispatch-safe")]
 macro_rules! trap {
     ($ctx:ident, $stop:ident) => {
         stop!($ctx, Stop::$stop)
     };
 }
 
-#[cfg(feature = "dispatch-safe")]
 macro_rules! current_pc {
     ($ctx:ident, $ip:ident) => {
         $ctx.stream
@@ -1113,7 +492,6 @@ macro_rules! current_pc {
     };
 }
 
-#[cfg(feature = "dispatch-safe")]
 macro_rules! jump_relative {
     ($ctx:ident, $ip:ident, $imm:expr) => {{
         // Arithmetic shift rather than `/ 2`: branch and jump immediates always have their low
@@ -1130,7 +508,6 @@ macro_rules! jump_relative {
     }};
 }
 
-#[cfg(feature = "dispatch-safe")]
 macro_rules! jump_absolute {
     ($ctx:ident, $target:expr) => {{
         let target = $target;
@@ -1146,9 +523,9 @@ macro_rules! jump_absolute {
     }};
 }
 
-#[cfg(feature = "dispatch-safe")]
 macro_rules! emit_safe_handlers {
     (
+
         $ctx:ident, $ip:ident, $next:ident,
         $($name:ident, $slots:expr, { $($field:ident),* $(,)? }, $body:block);* $(;)?
     ) => {
@@ -1218,12 +595,12 @@ macro_rules! emit_safe_handlers {
             /// `CoremarkInstruction` is `#[repr(u16)]` with no explicit discriminants, so variant
             /// N has discriminant N and this table can be built at compile time rather than by
             /// scanning the program.
-            pub(super) const fn build<Regs, Memory>() -> [SafeHandler<Regs, Memory>; 256]
+            pub(super) const fn build<Regs, Memory>() -> [SafeHandler<Regs, Memory>; VARIANTS]
             where
                 Regs: RegisterFile<R>,
                 Memory: VirtualMemory,
             {
-                let mut table: [SafeHandler<Regs, Memory>; 256] = [unsupported; 256];
+                let mut table: [SafeHandler<Regs, Memory>; VARIANTS] = [unsupported; VARIANTS];
                 let mut index = 0;
                 let listed: &[SafeHandler<Regs, Memory>] = &[$($name,)*];
 
@@ -1238,10 +615,8 @@ macro_rules! emit_safe_handlers {
     };
 }
 
-#[cfg(feature = "dispatch-safe")]
 ops!(emit_safe_handlers);
 
-#[cfg(feature = "dispatch-safe")]
 /// Handler for the instruction at `ip`
 #[inline(always)]
 fn table<Regs, Memory>(ip: Ip<'_>) -> SafeHandler<Regs, Memory>
@@ -1260,19 +635,17 @@ where
     Handlers::<Regs, Memory>::TABLE[usize::from(ip.discriminant())]
 }
 
-#[cfg(feature = "dispatch-safe")]
 struct Handlers<Regs, Memory>(PhantomData<(Regs, Memory)>);
 
-#[cfg(feature = "dispatch-safe")]
 impl<Regs, Memory> Handlers<Regs, Memory>
 where
     Regs: RegisterFile<R>,
     Memory: VirtualMemory,
 {
-    const TABLE: [SafeHandler<Regs, Memory>; 256] = safe_handlers::build::<Regs, Memory>();
+    const TABLE: [SafeHandler<Regs, Memory>; VARIANTS] = safe_handlers::build::<Regs, Memory>();
 }
 
-#[cfg(feature = "dispatch-safe-branchless")]
+#[cfg(feature = "dispatch-branchless")]
 /// A register file that needs no branch to read `x0`.
 ///
 /// Writes to `x0` are steered into a sink slot instead of being discarded by a branch, which keeps
@@ -1285,7 +658,7 @@ pub(crate) struct BranchlessRegisters {
     regs: [u64; 33],
 }
 
-#[cfg(feature = "dispatch-safe-branchless")]
+#[cfg(feature = "dispatch-branchless")]
 impl Default for BranchlessRegisters {
     #[inline(always)]
     fn default() -> Self {
@@ -1293,12 +666,15 @@ impl Default for BranchlessRegisters {
     }
 }
 
-#[cfg(feature = "dispatch-safe-branchless")]
+#[cfg(feature = "dispatch-branchless")]
 impl RegisterFile<R> for BranchlessRegisters {
     #[inline(always)]
     fn read(&self, reg: R) -> u64 {
         // SAFETY: `BasicRegister::offset()` is guaranteed to be below 32
-        *unsafe { self.regs.get_unchecked(usize::from(BasicRegister::offset(reg))) }
+        *unsafe {
+            self.regs
+                .get_unchecked(usize::from(BasicRegister::offset(reg)))
+        }
     }
 
     #[inline(always)]
@@ -1310,7 +686,7 @@ impl RegisterFile<R> for BranchlessRegisters {
     }
 }
 
-#[cfg(feature = "dispatch-safe-zerostore")]
+#[cfg(feature = "dispatch-zerostore")]
 /// A register file with no branch *and* no conditional move.
 ///
 /// [`BranchlessRegisters`] still needs a `cmov` to steer writes to `x0` into a sink slot. Here the
@@ -1326,7 +702,7 @@ pub(crate) struct ZeroStoreRegisters {
     regs: [u64; 32],
 }
 
-#[cfg(feature = "dispatch-safe-zerostore")]
+#[cfg(feature = "dispatch-zerostore")]
 impl Default for ZeroStoreRegisters {
     #[inline(always)]
     fn default() -> Self {
@@ -1334,18 +710,24 @@ impl Default for ZeroStoreRegisters {
     }
 }
 
-#[cfg(feature = "dispatch-safe-zerostore")]
+#[cfg(feature = "dispatch-zerostore")]
 impl RegisterFile<R> for ZeroStoreRegisters {
     #[inline(always)]
     fn read(&self, reg: R) -> u64 {
         // SAFETY: `BasicRegister::offset()` is guaranteed to be below 32
-        *unsafe { self.regs.get_unchecked(usize::from(BasicRegister::offset(reg))) }
+        *unsafe {
+            self.regs
+                .get_unchecked(usize::from(BasicRegister::offset(reg)))
+        }
     }
 
     #[inline(always)]
     fn write(&mut self, reg: R, value: u64) {
         // SAFETY: `BasicRegister::offset()` is guaranteed to be below 32
-        *unsafe { self.regs.get_unchecked_mut(usize::from(BasicRegister::offset(reg))) } = value;
+        *unsafe {
+            self.regs
+                .get_unchecked_mut(usize::from(BasicRegister::offset(reg)))
+        } = value;
         // Writes to `x0` have to be discarded. Rather than branching or selecting a sink slot,
         // let the write land and put the zero back; reads then never need a check.
         // SAFETY: the register file always has at least one slot
@@ -1353,9 +735,8 @@ impl RegisterFile<R> for ZeroStoreRegisters {
     }
 }
 
-/// Run the program with the safe, generic, tail-call-threaded back end
-#[cfg(feature = "dispatch-safe")]
-pub(crate) fn run_safe<Regs, Memory>(
+/// Run the program with the tail-call-threaded back end
+pub(crate) fn run_threaded<Regs, Memory>(
     instructions: &[I],
     base_addr: u64,
     return_trap: u64,

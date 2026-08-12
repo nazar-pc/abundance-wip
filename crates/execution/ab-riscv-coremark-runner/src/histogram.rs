@@ -41,17 +41,15 @@ pub(crate) fn histogram<const BASE: u64, const SIZE: usize>(
 
     loop {
         let instruction = match instruction_fetcher.fetch_instruction(memory) {
-            Ok(FetchInstructionResult::Instruction(instruction)) => instruction,
-            Ok(FetchInstructionResult::ControlFlow(ControlFlow::Continue(()))) => continue,
-            Ok(FetchInstructionResult::ControlFlow(ControlFlow::Break(()))) => break,
-            Err(error) => return Err(anyhow::anyhow!("{error}")),
+            FetchInstructionResult::Instruction(instruction) => instruction,
+            FetchInstructionResult::Continue => continue,
+            FetchInstructionResult::Break => break,
+            FetchInstructionResult::Err(error) => return Err(anyhow::anyhow!("{error}")),
         };
 
         // SAFETY: instrumentation only; the enum was observed to carry a 2-byte discriminant at
         // offset 0
-        let discriminant = usize::from(unsafe {
-            (&raw const instruction).cast::<u16>().read()
-        });
+        let discriminant = usize::from(unsafe { (&raw const instruction).cast::<u16>().read() });
         counts[discriminant] += 1;
         examples[discriminant] = Some(instruction);
 
@@ -61,17 +59,32 @@ pub(crate) fn histogram<const BASE: u64, const SIZE: usize>(
             rs2_value: regs.read(rs2),
         };
 
-        match instruction.execute(
+        let outcome = instruction.execute(
             rs1rs2_values,
             regs,
             ext_state,
             memory,
             &mut *instruction_fetcher,
             system_instruction_handler,
-        ) {
-            Ok(ControlFlow::Continue((rd, rd_value))) => {
-                regs.write(rd, rd_value);
+        );
+
+        // Same shape as `BasicInterpreterState::execute()`: the instruction says where execution
+        // goes next, and applying that is the loop's job
+        let control_flow = match outcome {
+            ExecutionResult::Continue { rd, value } => {
+                regs.write(rd, value);
+                continue;
             }
+            ExecutionResult::Branch { offset } => {
+                instruction_fetcher.set_pc_relative(memory, instruction.size(), offset)
+            }
+            ExecutionResult::Jump { target } => instruction_fetcher.set_pc(memory, target),
+            ExecutionResult::Break => break,
+            ExecutionResult::Err(error) => return Err(anyhow::anyhow!("{error}")),
+        };
+
+        match control_flow {
+            Ok(ControlFlow::Continue(())) => {}
             Ok(ControlFlow::Break(())) => break,
             Err(error) => return Err(anyhow::anyhow!("{error}")),
         }
