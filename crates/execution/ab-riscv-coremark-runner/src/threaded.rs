@@ -19,10 +19,16 @@
 //! The unsafe surface is two one-line helpers ([`Ip::advance`] and [`Ip::discriminant`]), both in
 //! this scaffolding rather than in generated per-instruction code.
 //!
-//! One axis is left open, because it is the one still worth measuring: **the register file**. It
-//! is a type parameter, selected by the `dispatch-basic`, `dispatch-branchless` and
-//! `dispatch-zerostore` features and named at run time by
-//! `COREMARK_DISPATCH=basic|branchless|zerostore`.
+//! Two axes are left open, because they are the ones still worth measuring. Both are orthogonal to
+//! everything above:
+//!
+//! * **the register file** — a type parameter, selected by the `dispatch-basic`,
+//!   `dispatch-branchless` and `dispatch-zerostore` features and named at run time by
+//!   `COREMARK_DISPATCH=basic|branchless|zerostore`
+//! * **the handler calling convention** — `extern "Rust"`, or `extern "rust-preserve-none"` with
+//!   the `dispatch-preserve-none` feature, which makes every register caller-saved so a handler
+//!   needs no prologue or epilogue, and (on x86-64) raises the number of argument registers from 6
+//!   to 12
 //!
 //! Leaving `COREMARK_DISPATCH` unset runs the generic loop, which is the baseline to compare
 //! against.
@@ -278,7 +284,9 @@ macro_rules! ops {
 /// Which register file the tail-threaded handlers are instantiated with.
 ///
 /// The handlers are generic over it, so these are not separate implementations — the same
-/// generated code, monomorphized three ways.
+/// generated code, monomorphized three ways. The handler calling convention is the other open
+/// axis, and it is a build-time choice (the `dispatch-preserve-none` feature) rather than one that
+/// can be made here, because it changes the type of every handler.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum Dispatch {
     /// The ordinary `BasicRegisters`, which branches to discard writes to `x0`
@@ -345,9 +353,47 @@ type SafeNext<'a> = Option<Ip<'a>>;
 /// A single instruction handler.
 ///
 /// Six arguments, which is exactly the number of integer argument registers x86-64 SysV has, so
-/// nothing spills.
-type SafeHandler<Regs, Memory> =
-    for<'a> fn(Ip<'a>, &mut Regs, &mut Memory, &mut Ext, &Stream<'a>, &mut Sys) -> SafeNext<'a>;
+/// under `extern "Rust"` nothing spills. `extern "rust-preserve-none"` has twelve, so it has room
+/// to spare — see [`SafeHandler`]'s other definition.
+#[cfg(not(feature = "dispatch-preserve-none"))]
+type SafeHandler<Regs, Memory> = for<'a> extern "Rust" fn(
+    Ip<'a>,
+    &mut Regs,
+    &mut Memory,
+    &mut Ext,
+    &Stream<'a>,
+    &mut Sys,
+) -> SafeNext<'a>;
+
+/// A single instruction handler, in a calling convention with no callee-saved registers.
+///
+/// Every register is caller-saved, so a handler needs neither prologue nor epilogue to preserve
+/// anything — which is the right shape for a tail-threaded chain, where a handler never returns to
+/// its caller and so has nothing to restore for it. On x86-64 it also passes arguments in twelve
+/// registers rather than six.
+#[cfg(feature = "dispatch-preserve-none")]
+type SafeHandler<Regs, Memory> = for<'a> extern "rust-preserve-none" fn(
+    Ip<'a>,
+    &mut Regs,
+    &mut Memory,
+    &mut Ext,
+    &Stream<'a>,
+    &mut Sys,
+) -> SafeNext<'a>;
+
+/// The calling convention [`emit_safe_handlers`] gives every handler it generates.
+///
+/// It has to match [`SafeHandler`] exactly: `become` requires the caller's and the callee's ABI to
+/// be identical, so a mismatch here is a compile error rather than a silent loss of the tail call.
+#[cfg(not(feature = "dispatch-preserve-none"))]
+macro_rules! emit_safe_handlers {
+    ($($rest:tt)*) => { emit_safe_handlers_with_abi! { "Rust", $($rest)* } };
+}
+
+#[cfg(feature = "dispatch-preserve-none")]
+macro_rules! emit_safe_handlers {
+    ($($rest:tt)*) => { emit_safe_handlers_with_abi! { "rust-preserve-none", $($rest)* } };
+}
 
 impl<'a> Ip<'a> {
     /// Position of the instruction at guest address `address`
@@ -523,9 +569,9 @@ macro_rules! jump_absolute {
     }};
 }
 
-macro_rules! emit_safe_handlers {
+macro_rules! emit_safe_handlers_with_abi {
     (
-
+        $abi:literal,
         $ctx:ident, $ip:ident, $next:ident,
         $($name:ident, $slots:expr, { $($field:ident),* $(,)? }, $body:block);* $(;)?
     ) => {
@@ -540,7 +586,7 @@ macro_rules! emit_safe_handlers {
                     reason = "Unconditional jumps do not use the advanced pointer, and trapping \
                         instructions never reach it"
                 )]
-                pub(super) fn $name<'a, Regs, Memory>(
+                pub(super) extern $abi fn $name<'a, Regs, Memory>(
                     $ip: Ip<'a>,
                     regs: &mut Regs,
                     memory: &mut Memory,
@@ -573,7 +619,7 @@ macro_rules! emit_safe_handlers {
                 }
             )*
 
-            pub(super) fn unsupported<'a, Regs, Memory>(
+            pub(super) extern $abi fn unsupported<'a, Regs, Memory>(
                 ip: Ip<'a>,
                 _regs: &mut Regs,
                 _memory: &mut Memory,

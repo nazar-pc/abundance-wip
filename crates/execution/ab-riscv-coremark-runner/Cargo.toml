@@ -38,6 +38,10 @@ default = [
 dispatch-basic = []
 dispatch-branchless = []
 dispatch-zerostore = []
+# Give the handlers the `extern "rust-preserve-none"` calling convention instead of `extern "Rust"`.
+# Orthogonal to the register file, so it doubles the set of configurations to measure rather than
+# adding one more to it.
+dispatch-preserve-none = []
 # This feature makes ELF building required, but not enabled by default to avoid requiring `riscv64-unknown-elf-gcc` for
 # everyone who tries to compile other parts of this repo
 build-elf-required = []

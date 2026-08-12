@@ -9,6 +9,7 @@
     signed_bigint_helpers,
     try_blocks
 )]
+#![cfg_attr(feature = "dispatch-preserve-none", feature(rust_preserve_none_cc))]
 // Benchmarking builds enable a single `dispatch-*` register file feature so that only one
 // monomorphization of the handlers ends up in the binary. In those configurations some of the
 // shared scaffolding is genuinely unused; the default build has every register file enabled and
