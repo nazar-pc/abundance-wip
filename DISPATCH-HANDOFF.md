@@ -623,47 +623,61 @@ turns out to be, it is the floor an effect has to clear before it means anything
    tie is a reason not to take it. Revisit **only** when the handler signature grows past six
    arguments (§4), which is the case where `extern "Rust"` starts spilling and preserve-none's
    twelve registers actually pay for themselves.
-2. **What is the loop limited by?** Narrowed, not yet answered. Profiled on Zen 4
-   (`profile-dispatch.sh`), per guest instruction:
+2. **What is the loop limited by?** **Answered: store-to-load forwarding failures, and the
+   `x0` handling that inflates them.** Zen 4, per guest instruction:
 
-   | mode | cycles | host-insn | IPC | ind-mispred | i$-miss | d$-miss | loads | stores | stlf |
-   |---|---|---|---|---|---|---|---|---|---|
-   | generic | 11.35 | 44.57 | 3.93 | 0.0038 | 0.0000 | 0.0018 | 8.03 | 1.43 | 0.31 |
-   | threaded | 6.23 | 11.74 | 1.88 | 0.0097 | 0.0000 | 0.0013 | 6.56 | 1.57 | 0.36 |
+   | mode | cycles | host-insn | IPC | ind-mispred | i$ | d$ | loads | stores | stlf | stlf-fail |
+   |---|---|---|---|---|---|---|---|---|---|---|
+   | generic | 11.34 | 44.55 | 3.93 | 0.0038 | 0.0000 | 0.0014 | 8.04 | 1.43 | 0.31 | 0.0331 |
+   | threaded | 6.14 | 11.75 | 1.91 | 0.0108 | 0.0000 | 0.0012 | 6.58 | 1.58 | 0.37 | **0.1513** |
 
-   Ruled out: **caches** (both miss rates ~0 — the ~10 KB of handlers sit inside Zen 4's 32 KB L1i
-   and CoreMark's working set inside L1d); **misprediction** (0.0097 indirect mispredicts at ~18–20
-   cycles is ~3% of 6.23, and note that nearly all mispredicts are indirect, so the guest's own
-   conditional branches fold into the dispatch target and predict well); **issue width** (IPC 1.88
-   on a six-wide core).
+   Caches, branch prediction and issue width were all ruled out. What is left is `stlf-fail`: loads
+   that could **not** be forwarded from an in-flight store and had to wait for it to reach the
+   cache. The threaded loop suffers **4.6x more of them than the generic loop**, and at a plausible
+   10–15 cycles each that is **1.5–2.3 cycles of the 6.14, a quarter to a third of all runtime**.
+   Successful forwards (`stlf`, 0.37) are not the problem; they cost about what an L1d hit costs.
 
-   **There is a large unexplained stall.** Memory ops are 8.13 per guest instruction, which at ~3
-   per cycle is 2.7 cycles, and 11.74 instructions at six-wide is 2.0 — so the throughput floor is
-   about 2.7 cycles against 6.23 actual. More than half the time is spent waiting.
+   `cycles:pp` attribution inside `CMv`, the hottest handler, says where:
 
-   The register-file round trip is real but does not obviously account for it: `stlf` is 0.36 per
-   guest instruction, so only a third of instructions forward from a recent store, and a successful
-   forward costs about what an L1d hit costs anyway. `stlf-fail` — the expensive case — was added
-   after this run and is not yet measured.
+   ```
+    11.36    movzbl  0x3(%rdi), %eax        # rs2 index, out of the instruction
+     7.64    movzbl  0x4(%rdi), %r10d       # rd index, out of the instruction
+     9.59    leaq    0x58bd8(%rip), %r11    # re-materialise the dispatch table address
+    11.70    movq    (%rsi,%rax,8), %rax    # read the guest register
+    18.03    movq    %rax, (%rsi,%r10,8)    # write the guest register
+     7.96    movzbl  0x8(%rdi), %eax        # next discriminant
+     5.29    addq    $0x8, %rdi
+    12.64    movq    $0x0, (%rsi)           # ZeroStoreRegisters re-zeroing x0
+    15.78    jmpq    *(%r11,%rax,8)         # dispatch
+   ```
 
-   Worth carrying: **roughly 60% of the loads are interpretation overhead rather than guest data.**
-   Of ~6.56, about three read operand bytes out of the decoded instruction, one reads the next
-   discriminant, and one reads the dispatch table; only about two are guest register reads. And
-   reading a guest register is a *dependent pair* of loads — the register index has to be loaded out
-   of the instruction before the register value can be loaded — which is the deepest serial
-   structure in the loop.
+   The two stores together are **30.7%** of the handler, and one of them exists only to undo a write
+   to `x0` that may not even have happened. Both store addresses are also derived from a *load* (the
+   `rd` byte), so they resolve late, and a store with an unresolved address is exactly what blocks a
+   younger load from forwarding.
 
-   Also note the threaded loop issues *more* stores than the generic one (1.57 vs 1.43), which is
-   `ZeroStoreRegisters` paying two stores per register write. It won anyway, so this is an
-   observation rather than a complaint.
+   Note this reframes the earlier axis-3 result rather than contradicting it. `ZeroStoreRegisters`
+   beat the branching and `cmov` files because both of those put even more work between the loaded
+   `rd` byte and the resolved store address. All three were paying the same tax; `zerostore` paid it
+   least.
 
-   **Next measurement, not next change:** the per-handler cycle attribution. The first attempt
-   silently produced nothing — `perf annotate` was passed a shortened symbol name and needs the full
-   one — which is fixed, along with preferring `cycles:pp` so that AMD IBS attributes precisely
-   rather than with skid. Inside a twelve-instruction handler that is the difference between
-   locating the stall and guessing at it. Nothing else here should be decided before it is run.
+   **The fix is to stop doing `x0` handling at run time at all.** The stream is pre-decoded, so the
+   decoder can rewrite the `rd` field of any instruction whose destination is `x0` to a sink slot,
+   giving a 33-slot register file where slot 0 is never written and reads of `x0` are therefore
+   always zero. That leaves one store per register write, no branch, no conditional move, and no
+   re-zeroing store — strictly better than all three register files measured so far, at zero run-time
+   cost, and it is only available *because* the stream is decoded ahead of time. Expected to remove
+   ~0.8 stores per guest instruction and a large share of the forwarding failures.
 
-   One consequence already: question 3 is dropped, see below.
+   Two smaller things visible in the same listing:
+
+   - `leaq` re-materialises the dispatch table address in **every** handler, one instruction in nine.
+     Building without PIE (`-C relocation-model=static`) should fold it into the jump's displacement
+     for free. Alternatively it could be passed as a seventh argument — which is the concrete case
+     for `extern "rust-preserve-none"` that question 1 said to wait for, since `extern "Rust"` has
+     no seventh register and would spill.
+   - The load and store handlers spend 8–9% on the `VirtualMemory` bounds check (`cmpq`/`jae`).
+     Real, correct, and probably the price of safety, but worth knowing it is that large.
 
 3. ~~**How handlers are reached.**~~ **Dropped**, see question 2: an inline handler pointer removes
    a dependent load from a chain the branch predictor already hides, and the entire misprediction

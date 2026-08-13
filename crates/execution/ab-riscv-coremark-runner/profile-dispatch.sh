@@ -54,6 +54,10 @@ CORE=${CORE:-1}
 REPEATS=${REPEATS:-3}
 SKIP_RECORD=${SKIP_RECORD:-}
 
+# `perf annotate` will otherwise try to fetch debuginfo over the network for every object it sees
+# and hang there indefinitely. Everything needed is already in the binary.
+export DEBUGINFOD_URLS=""
+
 if ! command -v perf >/dev/null; then
     echo "perf not found; install linux-tools for your kernel" >&2
     exit 1
