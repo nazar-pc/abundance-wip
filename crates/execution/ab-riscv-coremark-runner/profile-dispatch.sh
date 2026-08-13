@@ -21,6 +21,17 @@
 #   host-insn/guest-insn   Falls when handlers get leaner. Compare against cycles/guest-insn: if
 #                          instructions fall but cycles do not, the loop is stalled, not
 #                          throughput-bound.
+#   IPC                    A diagnostic, never a goal. The big `match` reached IPC above 5 and was
+#                          still slower, because it executed four times as many instructions per
+#                          guest instruction; most of them were an operand preamble the instruction
+#                          did not need, and being useless they were also independent, which is
+#                          exactly what inflates IPC. Low IPC on a 6-wide core means the loop is
+#                          waiting on a dependency chain and has issue width to spare.
+#   loads, stores, stlf    Per guest instruction. The guest register file lives in memory, so a
+#                          guest-level dependency becomes a store followed by a load of the same
+#                          slot, and `stlf` counts exactly those store-to-load forwards. If it is
+#                          near the number of guest instructions with a register dependency, the
+#                          critical path is the register file round trip rather than dispatch.
 #
 # Usage:
 #   ./profile-dispatch.sh
@@ -95,7 +106,8 @@ EVENTS="cycles,instructions,branches,branch-misses"
 for event in \
     L1-dcache-loads L1-dcache-load-misses L1-icache-load-misses \
     iTLB-load-misses dTLB-load-misses \
-    ex_ret_brn_ind_misp ex_ret_ind_brch_instr
+    ex_ret_brn_ind_misp ex_ret_ind_brch_instr \
+    ls_dispatch.ld_dispatch ls_dispatch.store_dispatch ls_stlf
 do
     if perf stat -e "$event" true >/dev/null 2>&1; then
         EVENTS="$EVENTS,$event"
@@ -131,6 +143,13 @@ stat_mode() {
             if (ind >= 0) { printf " %12.4f", ind / guest } else { printf " %12s", "n/a" }
             printf " %10.4f", ("L1-icache-load-misses" in v) ? v["L1-icache-load-misses"] / guest : 0
             printf " %10.4f", ("L1-dcache-load-misses" in v) ? v["L1-dcache-load-misses"] / guest : 0
+            loads = ("ls_dispatch.ld_dispatch" in v) ? v["ls_dispatch.ld_dispatch"] \
+                  : (("L1-dcache-loads" in v) ? v["L1-dcache-loads"] : -1)
+            if (loads >= 0) { printf " %8.2f", loads / guest } else { printf " %8s", "n/a" }
+            st = ("ls_dispatch.store_dispatch" in v) ? v["ls_dispatch.store_dispatch"] : -1
+            if (st >= 0) { printf " %8.2f", st / guest } else { printf " %8s", "n/a" }
+            stlf = ("ls_stlf" in v) ? v["ls_stlf"] : -1
+            if (stlf >= 0) { printf " %8.2f", stlf / guest } else { printf " %8s", "n/a" }
             printf "\n"
         }' "$out"
 
@@ -139,8 +158,8 @@ stat_mode() {
 
 echo "All columns are per guest instruction, except IPC."
 echo
-printf "%-10s %10s %10s %8s %10s %12s %10s %10s\n" \
-    mode cycles host-insn IPC br-miss ind-mispred i\$-miss d\$-miss
+printf "%-10s %10s %10s %8s %10s %12s %10s %10s %8s %8s %8s\n" \
+    mode cycles host-insn IPC br-miss ind-mispred i\$-miss d\$-miss loads stores stlf
 stat_mode generic
 stat_mode threaded
 
@@ -157,5 +176,19 @@ if [ -z "$SKIP_RECORD" ]; then
         | sed -e 's/ab_riscv_coremark_runner::threaded::safe_handlers:://' \
               -e 's/::<.*>//' \
         | head -25
+
+    # Where inside a handler the cycles land. Sampling skid means an instruction is blamed a little
+    # after the one that actually stalled, so read this as "the stall is around here", not "on this
+    # instruction" — but it is enough to tell a register-file access from the dispatch jump.
+    hottest=$(perf report -i "$data" --stdio --no-children --percent-limit 0.8 2>/dev/null \
+        | grep -oE "safe_handlers::[A-Za-z0-9_]+" | head -1 | sed 's/safe_handlers:://')
+
+    if [ -n "$hottest" ]; then
+        echo
+        echo "Cycle attribution inside the hottest handler ($hottest):"
+        echo
+        perf annotate -i "$data" --stdio --percent-limit 1 "$hottest" 2>/dev/null | head -40 || true
+    fi
+
     rm -f "$data" "$data.old" 2>/dev/null || true
 fi

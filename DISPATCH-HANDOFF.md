@@ -623,24 +623,55 @@ turns out to be, it is the floor an effect has to clear before it means anything
    tie is a reason not to take it. Revisit **only** when the handler signature grows past six
    arguments (§4), which is the case where `extern "Rust"` starts spilling and preserve-none's
    twelve registers actually pay for themselves.
-2. **What is the loop actually limited by now?** Four configurations converge on ~1.13–1.18 s on Zen
-   4 with nothing separating them, which means dispatch has stopped being the constraint and the
-   next win is somewhere else. Worth a profile before more dispatch work: the candidates are the
-   dependent load in the table lookup (question 3), memory access in the load/store handlers, and
-   instruction-cache pressure. This is the question that should be answered before questions 3–6 are
-   attempted, because it says which of them is worth doing.
-3. **How handlers are reached.** A handler pointer stored inline in the decoded stream, at 16 bytes
-   per instruction, versus a discriminant plus a table lookup. Trades I-cache and D-cache footprint
-   against one dependent load per dispatch. Unmeasured.
+2. **What is the loop limited by?** Partly answered, and the answer redirects the rest of this
+   list. Profiled on Zen 4 (`profile-dispatch.sh`), per guest instruction:
+
+   | mode | cycles | host-insn | IPC | br-miss | ind-mispred | i$-miss | d$-miss |
+   |---|---|---|---|---|---|---|---|
+   | generic | 11.29 | 44.59 | 3.95 | 0.0041 | 0.0025 | 0.0000 | 0.0008 |
+   | threaded | 6.15 | 11.76 | 1.91 | 0.0121 | 0.0112 | 0.0000 | 0.0007 |
+
+   - **Not the caches.** Both miss rates are essentially zero. The ~10 KB of handlers sit inside
+     Zen 4's 32 KB L1i, and CoreMark's working set sits inside L1d.
+   - **Not misprediction.** 0.0112 indirect mispredicts per guest instruction, at ~18–20 cycles, is
+     0.20–0.22 cycles of 6.15 — about 3.5%. Note that essentially *all* mispredicts are indirect
+     (0.0112 of 0.0121): the guest's own conditional branches are folded into the dispatch jump's
+     target, and the predictor handles them well.
+   - **Not issue width.** IPC 1.91 on a six-wide core with the frontend idle means the loop is
+     waiting, not saturating.
+   - What is left is the **dependency chain through the register file**, which lives in memory: a
+     guest instruction stores its result and the next one loads it back, so each dependent guest
+     instruction pays a store-to-load forward. Zen 4's is ~4–6 cycles, and 6.15 is suspiciously
+     close to one per instruction. `profile-dispatch.sh` now reports `loads`, `stores` and `stlf`
+     per guest instruction to confirm or kill this directly.
+
+   Two consequences for the rest of the list. Question 3 — a handler pointer inline in the stream to
+   remove the table lookup — is **not worth doing**: it shortens a chain that prediction already
+   hides, and 3.5% is the entire budget it could win from. And the generic loop's IPC of 3.95
+   against threaded's 1.91 is a warning about the metric, not a defect: the `match` loop reached
+   above 5 while being slower, because a universal operand preamble is both useless and independent,
+   which is precisely what inflates IPC.
+3. ~~**How handlers are reached.**~~ **Dropped**, see question 2: an inline handler pointer removes
+   a dependent load from a chain the branch predictor already hides, and the entire misprediction
+   budget it could recover is 3.5%. It would also double the decoded stream's footprint.
 4. **How `ExecutableInstruction` exposes its handlers.** An associated *slice* — no `COUNT` constant
    is needed. The open part is how that composes across extension traits.
-5. **The ~500-variant vector composition.** The 89→147 experiment shows `match` degrading while
+5. **Superinstructions, and the case against them here.** Fusing an adjacent pair removes one
+   dispatch *and* one register-file round trip, which is exactly what question 2 says is expensive.
+   `COREMARK_HISTOGRAM` now reports adjacent executed pairs, counting only those where the first
+   instruction fell through — the condition under which the two are also stream-adjacent, so a pair
+   it counts is one that could actually be fused. The distribution is flat: **922 distinct pairs,
+   the most common at 2.13%, and the top 20 together only 37%**. 88.7% of instructions have a
+   fusable successor, so the opportunity is real, but capturing it needs tens of superinstructions
+   for a fraction of the gain each. Worth knowing before anyone assumes fusion is the obvious next
+   move.
+6. **The ~500-variant vector composition.** The 89→147 experiment shows `match` degrading while
    `call`/`tail` do not, but 500 arms is a different regime for I-cache, and this is where the
    existing vector-extension regression lives. The most valuable case to prove.
-6. **Whether `Branch` should be relative to the *next* instruction** rather than this one. It would
+7. **Whether `Branch` should be relative to the *next* instruction** rather than this one. It would
    remove a `- instruction_size` from every relative branch, at the cost of changing the shared
    enum's contract and every instruction that produces it.
-7. ~~**`branchless` versus `zerostore` register files.**~~ **Answered: `zerostore`.** It beat `basic`
+8. ~~**`branchless` versus `zerostore` register files.**~~ **Answered: `zerostore`.** It beat `basic`
    by 6.3% with `-C target-cpu=znver4` and 8.8% on the default build, with `branchless` between them
    at −2.3% rather than level with it. Neither Xeon could separate the three. `ZeroStoreRegisters` is
    now the only one implemented; the other two are in the history of `threaded.rs` up to `e023d69`
