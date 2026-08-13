@@ -209,14 +209,44 @@ Three things fall out of it:
   2.5% *ahead*. That is close to the spread, so it is a hint rather than a finding, but it means
   znver4 should not be assumed to be the build that matters.
 
-### The preserve-none argument-order trap
+### The preserve-none argument-order trap, and what fixing it showed
 
 The first preserve-none attempt lost on Zen 4, and lost *in proportion to the text it added*:
 +2.0% text cost `basic` nothing, +3.7% cost `branchless` ~3%, +6.8% cost `zerostore` ~8%. That is a
 clean enough correlation to name the mechanism, and the mechanism turned out to be fixable — see §4.
-After putting the coldest arguments first, preserve-none produces **smaller** text than
-`extern "Rust"` in every configuration, so the Zen 4 numbers above are for the *superseded*
-argument order and the question is open again on better terms.
+Re-run with the arguments ordered coldest first, same machine, `znver4`:
+
+| configuration | best | median | spread | vs its `extern "Rust"` twin |
+|---|---|---|---|---|
+| generic loop | 2.117 | 2.129 | 1.5% | — |
+| `basic` | 1.223 | 1.248 | 2.2% | — |
+| `basic-pn` | 1.134 | 1.178 | 4.9% | **−5.6%** |
+| `branchless` | 1.233 | 1.258 | 2.5% | — |
+| `branchless-pn` | 1.126 | 1.154 | 3.7% | **−8.3%** |
+| `zerostore` | 1.126 | 1.162 | 4.1% | — |
+| `zerostore-pn` | 1.137 | 1.149 | 2.1% | −1.1%, inside the spread |
+
+The reorder turned a 9% loss into a 6–8% win for `basic` and `branchless`. But the useful reading is
+not "preserve-none is good now":
+
+- **It did not beat the best `extern "Rust"` configuration.** `zerostore` was already at the floor,
+  and `zerostore-pn` neither improves on it nor loses to it — 1.1% against a 2–4% spread, with the
+  best-of and median rankings inverting between the two, which is what a tie looks like.
+- **What preserve-none actually buys is making the register file stop mattering.** Under
+  `extern "Rust"` the three files span 7.4% (1.162 to 1.258); under preserve-none they span 2.5%
+  (1.149 to 1.178), and all three land where `zerostore` already was. The freed registers absorb the
+  `x0`-handling work that separated them.
+- So the field converges on ~1.13–1.18 s, four configurations deep, with nothing separating the top
+  four. Whatever now limits this loop is not dispatch.
+
+**Practical conclusion: `zerostore` with `extern "Rust"` is the configuration to build.** It reaches
+the floor with no unstable ABI feature attached. preserve-none earns its keep only if the handler
+signature outgrows six arguments (§4), which is plausible for the eventual generic implementation
+but is not the case today.
+
+Note also that the generic baseline moved from 2.282 to 2.129 between these two Zen 4 sessions with
+no change to its code — 6.7%, on a dedicated machine whose within-run spread is 1.5%. Compare within
+a run, never across.
 
 Read down the columns rather than across the rows, and the numbers say something the flat list
 hides:
@@ -316,10 +346,50 @@ preserve-none removes essentially all of it.
 
 **Argument order is load-bearing, and getting it wrong costs more than the prologues are worth.**
 LLVM's `preserve_none` passes arguments in **R12, R13, R14, R15, RDI, RSI, RDX, RCX, R8, R9, R11,
-RAX** — twelve registers rather than six, but with the high registers *first*. On x86-64 those are
-exactly the registers that encode worst: a memory operand based on **R12 always costs an extra SIB
-byte**, and one based on **R13 always costs an extra displacement byte**. Both are unavoidable
-properties of ModRM, not something the register allocator can route around.
+RAX** — twelve registers rather than six, but with the high registers *first*. (Verified from
+codegen rather than from documentation: give a `preserve-none` function twelve arguments, store each
+one, and read off the sources.) On x86-64 those first two are exactly the registers that encode
+worst: a memory operand based on **R12 always costs an extra SIB byte**, and one based on **R13
+always costs an extra displacement byte**. Both are unavoidable properties of ModRM — R12 and R13
+are the REX-extended twins of RSP and RBP, and they inherit the escape meanings those two encodings
+carry — so it is not something the register allocator can route around.
+
+#### Why the order is "backwards", and when it is right
+
+It looks inverted against every other x86-64 convention, but it is deliberate. **The first four
+`preserve_none` argument registers are precisely the four callee-saved GPRs that SysV leaves
+generally allocatable** — R12, R13, R14, R15. So a `preserve_none` function that calls an ordinary
+C function keeps its first four arguments across that call *for free*, while later arguments have to
+be rescued. Compiling six pointers live across an opaque `extern "C"` call shows it exactly:
+
+```asm
+across_c_call:
+        pushq   %rbp
+        movq    %rsi, %rbx          # arg 6 evacuated, RSI is caller-saved
+        movq    %rdi, %rbp          # arg 5 evacuated, RDI is caller-saved
+        callq   *opaque@GOTPCREL(%rip)
+        movq    (%r13), %rax        # args 1-4 still live, untouched
+        addq    (%r12), %rax
+        addq    (%r14), %rax
+        addq    (%r15), %rax
+        addq    (%rbp), %rax
+        addq    (%rbx), %rax
+        popq    %rbp
+        retq
+```
+
+Args 1–4 survive with no spill; args 5–6 cost two moves, a `push` and a `pop` — reintroducing
+exactly the prologue `preserve_none` exists to remove. So the ordering optimises for
+`preserve_none` code that interoperates with ordinary C, which is the general case.
+
+It is the wrong trade for **this** interpreter, because the hot path calls nothing: 2 handlers out
+of 140 contain a `call` at all, and those are the cold CSR paths. We get none of the interop benefit
+and pay the encoding cost on every dereference. Hence coldest-first.
+
+**This is the one thing to re-derive rather than inherit if the real implementation's handlers ever
+call out on the hot path** — a non-inlined `VirtualMemory` access, a real system-instruction
+handler, anything behind a `dyn`. The moment a hot handler makes a call, the persistent state wants
+to be in R12–R15 after all, and the right order flips back.
 
 The obvious signature puts the two hottest pointers — the instruction pointer, dereferenced by every
 handler to read its operands, and the register file, dereferenced by nearly all of them — in exactly
@@ -361,13 +431,20 @@ That leaves preserve-none strictly better on paper — same instruction count, a
 re-measuring there. §2 established that this loop is throughput-bound *and* sensitive to text size,
 and cold-first is now on the right side of both.
 
-Two things to carry:
+Three things to carry:
 
-- The twelve argument registers are still not being used for anything; the signature takes six. If
-  preserve-none wins, the question behind it is what else could live in a register.
+- **The handler signature sits exactly on the SysV limit.** Six arguments, six integer argument
+  registers. That is why `extern "Rust"` holds its own here: nothing spills. Add a seventh piece of
+  state — and the eventual generic implementation plausibly needs one, since this prototype's `Sys`
+  and `Ext` are stand-ins for a real system-instruction handler and real extension state — and
+  `extern "Rust"` starts passing it on the stack, once per dispatch, forever. preserve-none has
+  twelve. **That, not the prologues, is the case where preserve-none wins**, and it is worth
+  re-testing at the point the signature grows rather than deciding now.
 - This is an x86-64 problem specifically. aarch64 and riscv64 encode all their registers uniformly,
-  so the penalty does not exist there and argument order should not matter — worth confirming rather
-  than assuming, if either becomes a host target.
+  so the R12/R13 penalty does not exist there and argument order should cost nothing — worth
+  confirming rather than assuming, if either becomes a host target.
+- `rust_preserve_none_cc` is unstable (rust-lang/rust#151401). Since it currently buys nothing over
+  `zerostore` + `extern "Rust"`, that is a dependency with no return attached to it today.
 
 ### Type layout
 
@@ -536,17 +613,18 @@ turns out to be, it is the floor an effect has to clear before it means anything
 
 ## 7. Open questions
 
-1. **Does `extern "rust-preserve-none"` pay on Zen 4 now that the arguments are ordered coldest
-   first?** (§4). The first attempt lost by up to 9% because the hot pointers sat in R12/R13 and
-   paid an encoding tax on every dereference. With that fixed it produces 6–10% *less* text than
-   `extern "Rust"` at the same instruction count and with the prologues still gone, which is the
-   opposite trade to the one Zen 4 rejected. Ready to run — six binaries, one command.
-2. **If it does, what goes in the freed registers?** preserve-none offers twelve argument registers
-   on x86-64 and the handler signature uses six. Candidates: the stream base and bounds, which are
-   currently reached through `&Stream`, and the `Ext` fields. Beware §4's register-pressure cliff —
-   this is exactly the kind of change that measured +7%/+13%/−50% depending on codegen configuration.
-   Note also that anything added lands in R14/R15 next, which are cheaper than R12/R13 but still
-   cost a REX byte where RDI/RSI would not.
+1. ~~**Does `extern "rust-preserve-none"` pay?**~~ **Answered: not today.** With the arguments
+   ordered coldest first it rescues `basic` (−5.6%) and `branchless` (−8.3%), but it ties with
+   `zerostore` + `extern "Rust"`, which was already at the floor. Since the feature is unstable, a
+   tie is a reason not to take it. Revisit **only** when the handler signature grows past six
+   arguments (§4), which is the case where `extern "Rust"` starts spilling and preserve-none's
+   twelve registers actually pay for themselves.
+2. **What is the loop actually limited by now?** Four configurations converge on ~1.13–1.18 s on Zen
+   4 with nothing separating them, which means dispatch has stopped being the constraint and the
+   next win is somewhere else. Worth a profile before more dispatch work: the candidates are the
+   dependent load in the table lookup (question 3), memory access in the load/store handlers, and
+   instruction-cache pressure. This is the question that should be answered before questions 3–6 are
+   attempted, because it says which of them is worth doing.
 3. **How handlers are reached.** A handler pointer stored inline in the decoded stream, at 16 bytes
    per instruction, versus a discriminant plus a table lookup. Trades I-cache and D-cache footprint
    against one dependent load per dispatch. Unmeasured.
