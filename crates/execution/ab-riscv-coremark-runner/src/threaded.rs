@@ -19,22 +19,16 @@
 //! The unsafe surface is two one-line helpers ([`Ip::advance`] and [`Ip::discriminant`]), both in
 //! this scaffolding rather than in generated per-instruction code.
 //!
-//! Two axes are left open, because they are the ones still worth measuring. Both are orthogonal to
-//! everything above:
+//! The register file stays a type parameter, because that is the design conclusion rather than an
+//! open question: [`ZeroStoreRegisters`] won on Zen 4 and is the only one implemented here, but
+//! nothing in the handlers knows that.
 //!
-//! * **the register file** — a type parameter, selected by the `dispatch-basic`,
-//!   `dispatch-branchless` and `dispatch-zerostore` features and named at run time by
-//!   `COREMARK_DISPATCH=basic|branchless|zerostore`
-//! * **the handler calling convention** — `extern "Rust"`, or `extern "rust-preserve-none"` with
-//!   the `dispatch-preserve-none` feature, which makes every register caller-saved so a handler
-//!   needs no prologue or epilogue, and (on x86-64) raises the number of argument registers from 6
-//!   to 12
+//! Set `COREMARK_DISPATCH` to any value to run this; leaving it unset runs the generic loop, which
+//! is the baseline to compare against. Both live in the same binary.
 //!
-//! Leaving `COREMARK_DISPATCH` unset runs the generic loop, which is the baseline to compare
-//! against.
-//!
-//! Dispatch strategies that were measured and lost are not here; see the git history of this file
-//! for the raw-pointer `match`, `call`, `become` and plain-tail-call back ends.
+//! What was measured and lost is not here but is in the git history of this file: the raw-pointer
+//! `match`, `call`, `become` and plain-tail-call back ends, the `basic` and `branchless` register
+//! files, and `extern "rust-preserve-none"` handlers.
 
 use crate::instruction::CoremarkInstruction as I;
 use ab_riscv_interpreter::basic::BasicRegister;
@@ -281,36 +275,6 @@ macro_rules! ops {
 // Entry point
 // --------------------------------------------------------------------------------------------
 
-/// Which register file the tail-threaded handlers are instantiated with.
-///
-/// The handlers are generic over it, so these are not separate implementations — the same
-/// generated code, monomorphized three ways. The handler calling convention is the other open
-/// axis, and it is a build-time choice (the `dispatch-preserve-none` feature) rather than one that
-/// can be made here, because it changes the type of every handler.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) enum Dispatch {
-    /// The ordinary `BasicRegisters`, which branches to discard writes to `x0`
-    Basic,
-    /// [`BranchlessRegisters`], which steers writes to `x0` into a sink slot instead of branching
-    Branchless,
-    /// [`ZeroStoreRegisters`], which drops even the conditional move [`BranchlessRegisters`] needs
-    ZeroStore,
-}
-
-impl Dispatch {
-    pub(crate) fn parse(value: &str) -> Option<Self> {
-        match value {
-            #[cfg(feature = "dispatch-basic")]
-            "basic" => Some(Self::Basic),
-            #[cfg(feature = "dispatch-branchless")]
-            "branchless" => Some(Self::Branchless),
-            #[cfg(feature = "dispatch-zerostore")]
-            "zerostore" => Some(Self::ZeroStore),
-            _ => None,
-        }
-    }
-}
-
 // --------------------------------------------------------------------------------------------
 // Handlers
 // --------------------------------------------------------------------------------------------
@@ -353,58 +317,10 @@ type SafeNext<'a> = Option<Ip<'a>>;
 /// A single instruction handler.
 ///
 /// Six arguments, which is exactly the number of integer argument registers x86-64 SysV has, so
-/// under `extern "Rust"` nothing spills. `extern "rust-preserve-none"` has twelve, so it has room
-/// to spare — see [`SafeHandler`]'s other definition.
-#[cfg(not(feature = "dispatch-preserve-none"))]
-type SafeHandler<Regs, Memory> = for<'a> extern "Rust" fn(
-    Ip<'a>,
-    &mut Regs,
-    &mut Memory,
-    &mut Ext,
-    &Stream<'a>,
-    &mut Sys,
-) -> SafeNext<'a>;
-
-/// A single instruction handler, in a calling convention with no callee-saved registers.
-///
-/// Every register is caller-saved, so a handler needs neither prologue nor epilogue to preserve
-/// anything — which is the right shape for a tail-threaded chain, where a handler never returns to
-/// its caller and so has nothing to restore for it. On x86-64 it also passes arguments in twelve
-/// registers rather than six.
-///
-/// **The arguments are in the opposite order to the `extern "Rust"` handler above, coldest first,
-/// and that is load-bearing.** `preserve_none` passes arguments in R12, R13, R14, R15, RDI, RSI,
-/// ... — the high registers first, and those are exactly the ones x86-64 encodes worst: a memory
-/// operand based on R12 always costs an extra SIB byte and one based on R13 always costs an extra
-/// displacement byte. Putting the hot pointers in the first two positions therefore taxes every
-/// dereference of them, which measured as 2–7% more text and, on Zen 4, a loss of up to 9%.
-///
-/// So the two arguments this interpreter never dereferences go first and absorb the penalty, and
-/// the instruction pointer and register file — dereferenced by nearly every handler — go last,
-/// where they land in RDI and RSI and encode as cheaply as they did under `extern "Rust"`.
-#[cfg(feature = "dispatch-preserve-none")]
-type SafeHandler<Regs, Memory> = for<'a> extern "rust-preserve-none" fn(
-    &mut Sys,
-    &mut Ext,
-    &Stream<'a>,
-    &mut Memory,
-    Ip<'a>,
-    &mut Regs,
-) -> SafeNext<'a>;
-
-/// The calling convention [`emit_safe_handlers`] gives every handler it generates.
-///
-/// It has to match [`SafeHandler`] exactly: `become` requires the caller's and the callee's ABI to
-/// be identical, so a mismatch here is a compile error rather than a silent loss of the tail call.
-#[cfg(not(feature = "dispatch-preserve-none"))]
-macro_rules! emit_safe_handlers {
-    ($($rest:tt)*) => { emit_safe_handlers_with_abi! { "Rust", $($rest)* } };
-}
-
-#[cfg(feature = "dispatch-preserve-none")]
-macro_rules! emit_safe_handlers {
-    ($($rest:tt)*) => { emit_safe_handlers_with_abi! { "rust-preserve-none", $($rest)* } };
-}
+/// nothing spills. Adding a seventh would, once per dispatch — see the notes on
+/// `extern "rust-preserve-none"`, which has twelve and is the answer if that ever happens.
+type SafeHandler<Regs, Memory> =
+    for<'a> fn(Ip<'a>, &mut Regs, &mut Memory, &mut Ext, &Stream<'a>, &mut Sys) -> SafeNext<'a>;
 
 impl<'a> Ip<'a> {
     /// Position of the instruction at guest address `address`
@@ -580,21 +496,15 @@ macro_rules! jump_absolute {
     }};
 }
 
-macro_rules! emit_safe_handlers_with_abi {
+macro_rules! emit_safe_handlers {
     (
-        $abi:literal,
         $ctx:ident, $ip:ident, $next:ident,
         $($name:ident, $slots:expr, { $($field:ident),* $(,)? }, $body:block);* $(;)?
     ) => {
         mod safe_handlers {
             use super::*;
 
-            // The two handler definitions below differ only in the order of their arguments, which
-            // has to match whichever `SafeHandler` is in scope. Everything between the signature
-            // and the tail call is identical and has to stay that way; it is duplicated rather
-            // than factored out because a parameter list cannot be spliced in from another macro.
             $(
-                #[cfg(not(feature = "dispatch-preserve-none"))]
                 #[expect(non_snake_case, reason = "One handler per instruction variant")]
                 #[allow(
                     unused_variables,
@@ -602,7 +512,7 @@ macro_rules! emit_safe_handlers_with_abi {
                     reason = "Unconditional jumps do not use the advanced pointer, and trapping \
                         instructions never reach it"
                 )]
-                pub(super) extern $abi fn $name<'a, Regs, Memory>(
+                pub(super) fn $name<'a, Regs, Memory>(
                     $ip: Ip<'a>,
                     regs: &mut Regs,
                     memory: &mut Memory,
@@ -634,49 +544,9 @@ macro_rules! emit_safe_handlers_with_abi {
                     )
                 }
 
-                #[cfg(feature = "dispatch-preserve-none")]
-                #[expect(non_snake_case, reason = "One handler per instruction variant")]
-                #[allow(
-                    unused_variables,
-                    unreachable_code,
-                    reason = "Unconditional jumps do not use the advanced pointer, and trapping \
-                        instructions never reach it"
-                )]
-                pub(super) extern $abi fn $name<'a, Regs, Memory>(
-                    sys: &mut Sys,
-                    ext: &mut Ext,
-                    stream: &Stream<'a>,
-                    memory: &mut Memory,
-                    $ip: Ip<'a>,
-                    regs: &mut Regs,
-                ) -> SafeNext<'a>
-                where
-                    Regs: RegisterFile<R>,
-                    Memory: VirtualMemory,
-                {
-                    let I::$name { $($field,)* .. } = *$ip.get() else {
-                        // SAFETY: this handler is only ever reached for its own variant
-                        unsafe { unreachable_unchecked() }
-                    };
-                    let $ctx = Env { regs, memory, ext, stream, sys };
-                    // SAFETY: the decoded stream ends with a jump, so anything that can fall
-                    // through has at least this many slots left
-                    let $next = unsafe { $ip.advance($slots) };
-                    let $next = $body;
-                    let handler = table::<Regs, Memory>($next);
-                    become handler(
-                        $ctx.sys,
-                        $ctx.ext,
-                        $ctx.stream,
-                        $ctx.memory,
-                        $next,
-                        $ctx.regs,
-                    )
-                }
             )*
 
-            #[cfg(not(feature = "dispatch-preserve-none"))]
-            pub(super) extern $abi fn unsupported<'a, Regs, Memory>(
+            pub(super) fn unsupported<'a, Regs, Memory>(
                 ip: Ip<'a>,
                 _regs: &mut Regs,
                 _memory: &mut Memory,
@@ -693,23 +563,6 @@ macro_rules! emit_safe_handlers_with_abi {
                 None
             }
 
-            #[cfg(feature = "dispatch-preserve-none")]
-            pub(super) extern $abi fn unsupported<'a, Regs, Memory>(
-                _sys: &mut Sys,
-                ext: &mut Ext,
-                _stream: &Stream<'a>,
-                _memory: &mut Memory,
-                ip: Ip<'a>,
-                _regs: &mut Regs,
-            ) -> SafeNext<'a>
-            where
-                Regs: RegisterFile<R>,
-                Memory: VirtualMemory,
-            {
-                cold_path();
-                ext.stop = Stop::Unsupported(u16::from(ip.discriminant()));
-                None
-            }
 
             /// Dispatch table, in enum declaration order.
             ///
@@ -766,54 +619,15 @@ where
     const TABLE: [SafeHandler<Regs, Memory>; VARIANTS] = safe_handlers::build::<Regs, Memory>();
 }
 
-#[cfg(feature = "dispatch-branchless")]
-/// A register file that needs no branch to read `x0`.
-///
-/// Writes to `x0` are steered into a sink slot instead of being discarded by a branch, which keeps
-/// slot zero zero forever and lets reads be unconditional. The unchecked indexing is the same
-/// thing `BasicRegisters` already does, justified by `BasicRegister` being an unsafe trait whose
-/// contract is that `offset()` is below `N`. It stays inside the register file; no generated
-/// handler contains `unsafe`.
-#[derive(Debug, Clone)]
-pub(crate) struct BranchlessRegisters {
-    regs: [u64; 33],
-}
-
-#[cfg(feature = "dispatch-branchless")]
-impl Default for BranchlessRegisters {
-    #[inline(always)]
-    fn default() -> Self {
-        Self { regs: [0; _] }
-    }
-}
-
-#[cfg(feature = "dispatch-branchless")]
-impl RegisterFile<R> for BranchlessRegisters {
-    #[inline(always)]
-    fn read(&self, reg: R) -> u64 {
-        // SAFETY: `BasicRegister::offset()` is guaranteed to be below 32
-        *unsafe {
-            self.regs
-                .get_unchecked(usize::from(BasicRegister::offset(reg)))
-        }
-    }
-
-    #[inline(always)]
-    fn write(&mut self, reg: R, value: u64) {
-        let offset = usize::from(BasicRegister::offset(reg));
-        let offset = if offset == 0 { 32 } else { offset };
-        // SAFETY: `BasicRegister::offset()` is guaranteed to be below 32, and the sink slot is 32
-        *unsafe { self.regs.get_unchecked_mut(offset) } = value;
-    }
-}
-
-#[cfg(feature = "dispatch-zerostore")]
 /// A register file with no branch *and* no conditional move.
 ///
-/// [`BranchlessRegisters`] still needs a `cmov` to steer writes to `x0` into a sink slot. Here the
-/// write is unconditional and slot zero is re-zeroed afterwards, which restores the invariant that
-/// makes reads unconditional. That trades three ALU ops for one extra store, and leaves a handler
-/// with no internal control flow at all.
+/// Writes to `x0` have to be discarded. Branching on it costs a branch, and steering it into a sink
+/// slot costs a `cmov`; here the write lands unconditionally and slot zero is re-zeroed afterwards,
+/// which restores the invariant that makes reads unconditional. That trades three ALU ops for one
+/// extra store and leaves a handler with no internal control flow at all.
+///
+/// It won on Zen 4 by 6.3% over the ordinary register file with `-C target-cpu=znver4` and 8.8%
+/// without, with the sink-slot variant between the two. Neither Xeon could separate the three.
 ///
 /// Note this is the opposite of the right trade for the generic `match` loop, where the same
 /// change measured 8.5% *slower*: there, reads dominate and staying branchy avoids loading `x0`
@@ -823,7 +637,6 @@ pub(crate) struct ZeroStoreRegisters {
     regs: [u64; 32],
 }
 
-#[cfg(feature = "dispatch-zerostore")]
 impl Default for ZeroStoreRegisters {
     #[inline(always)]
     fn default() -> Self {
@@ -831,7 +644,6 @@ impl Default for ZeroStoreRegisters {
     }
 }
 
-#[cfg(feature = "dispatch-zerostore")]
 impl RegisterFile<R> for ZeroStoreRegisters {
     #[inline(always)]
     fn read(&self, reg: R) -> u64 {
@@ -884,10 +696,7 @@ where
         return Stop::BadJump;
     };
     let handler = table::<Regs, Memory>(ip);
-    #[cfg(not(feature = "dispatch-preserve-none"))]
     handler(ip, regs, memory, &mut ext, &stream, &mut sys);
-    #[cfg(feature = "dispatch-preserve-none")]
-    handler(&mut sys, &mut ext, &stream, memory, ip, regs);
 
     ext.stop
 }

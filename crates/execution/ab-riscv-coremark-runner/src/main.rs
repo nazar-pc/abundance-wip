@@ -9,25 +9,6 @@
     signed_bigint_helpers,
     try_blocks
 )]
-#![cfg_attr(feature = "dispatch-preserve-none", feature(rust_preserve_none_cc))]
-// Benchmarking builds enable a single `dispatch-*` register file feature so that only one
-// monomorphization of the handlers ends up in the binary. In those configurations some of the
-// shared scaffolding is genuinely unused; the default build has every register file enabled and
-// still lints normally.
-#![cfg_attr(
-    not(all(
-        feature = "dispatch-basic",
-        feature = "dispatch-branchless",
-        feature = "dispatch-zerostore",
-    )),
-    allow(
-        dead_code,
-        unused_imports,
-        unused_macros,
-        unreachable_code,
-        reason = "Single configuration benchmarking builds do not use every helper"
-    )
-)]
 
 mod elf;
 mod histogram;
@@ -166,11 +147,8 @@ fn run_once() -> anyhow::Result<std::time::Duration> {
         return Ok(std::time::Duration::ZERO);
     }
 
-    if let Ok(dispatch) = std::env::var("COREMARK_DISPATCH") {
-        let dispatch = threaded::Dispatch::parse(&dispatch)
-            .with_context(|| format!("Unknown `COREMARK_DISPATCH` value {dispatch}"))?;
-
-        let host_elapsed = run_threaded_dispatch(dispatch, &mut state, &setup)?;
+    if std::env::var("COREMARK_DISPATCH").is_ok() {
+        let host_elapsed = run_threaded_with::<threaded::ZeroStoreRegisters>(&mut state, &setup)?;
 
         let output = read_output(&state.memory, output_buf_addr, output_buf_size)
             .context("Coremark output not found in guest memory")?;
@@ -210,39 +188,11 @@ struct Setup {
     entry_point: u64,
 }
 
-/// Run the tail-threaded back end with the register file `dispatch` names.
+/// Run the tail-threaded back end, borrowing memory and the decoded stream out of the state that
+/// owns them.
 ///
-/// The register files differ only in which type parameter the handlers are instantiated with,
-/// which is the point: the handlers are generic over it.
-fn run_threaded_dispatch(
-    dispatch: threaded::Dispatch,
-    state: &mut CoremarkState,
-    setup: &Setup,
-) -> anyhow::Result<std::time::Duration> {
-    match dispatch {
-        #[cfg(feature = "dispatch-basic")]
-        threaded::Dispatch::Basic => run_threaded_with::<BasicRegisters<Reg<u64>>>(state, setup),
-        #[cfg(feature = "dispatch-branchless")]
-        threaded::Dispatch::Branchless => {
-            run_threaded_with::<threaded::BranchlessRegisters>(state, setup)
-        }
-        #[cfg(feature = "dispatch-zerostore")]
-        threaded::Dispatch::ZeroStore => {
-            run_threaded_with::<threaded::ZeroStoreRegisters>(state, setup)
-        }
-        #[cfg(not(all(
-            feature = "dispatch-basic",
-            feature = "dispatch-branchless",
-            feature = "dispatch-zerostore"
-        )))]
-        _ => Err(anyhow::anyhow!(
-            "Register file not compiled in, enable its feature"
-        )),
-    }
-}
-
-/// Run the tail-threaded back end with a specific register file, borrowing memory and the decoded
-/// stream out of the state that owns them
+/// Still generic over the register file even though only one is implemented, because that is the
+/// design conclusion: the handlers do not know which one they got.
 fn run_threaded_with<Regs>(
     state: &mut CoremarkState,
     setup: &Setup,

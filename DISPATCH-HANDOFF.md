@@ -495,31 +495,35 @@ already keeping live.
 
 On `claude/risc-v-dispatch-perf-6qtcdo`, from the workspace root:
 
-```bash
-COREMARK_ITERATIONS=3000 ./crates/execution/ab-riscv-coremark-runner/build-dispatch-bins.sh
-ROUNDS=5 CORE=<core> ./crates/execution/ab-riscv-coremark-runner/run-dispatch-bins.sh
-```
-
-`build-dispatch-bins.sh` builds the cross product of axes 3 and 4 — six binaries named
-`{basic,branchless,zerostore}[-pn]` — one per configuration, so that no two sets of handlers ever
-share a text section. Each also contains the generic interpreter loop, which is the **baseline**:
-run it by leaving `COREMARK_DISPATCH` unset.
-
-`run-dispatch-bins.sh` runs all of them and prints one table. It exists so that the methodology is
-not something to remember: it interleaves the configurations round-robin across rounds rather than
-running all of one and then all of the next, reports best-of, and prints the run-to-run spread next
-to every timing so that an effect narrower than the noise is visibly not a result. It also refuses
-to produce a table at all when the comparison would be invalid — wrong CRCs from any configuration,
-or binaries built with different `COREMARK_ITERATIONS`, which is easy to do accidentally because the
-count is baked in at build time and a partial rebuild leaves the set incomparable. `ROUNDS`, `CORE`,
-`COREMARK_REPEAT`, `ONLY` and `SKIP_BASELINE` control it; running it by hand instead is how
-non-comparable numbers get made.
-
-Individual runs, if needed:
+Now that one configuration survives, there is one binary with two modes in it, and two scripts:
 
 ```bash
-COREMARK_DISPATCH=zerostore taskset -c <core> ./dispatch-bins/zerostore-pn
+COREMARK_ITERATIONS=3000 ROUNDS=5 CORE=<core> \
+    ./crates/execution/ab-riscv-coremark-runner/bench-dispatch.sh
+COREMARK_ITERATIONS=3000 CORE=<core> \
+    ./crates/execution/ab-riscv-coremark-runner/profile-dispatch.sh
 ```
+
+`bench-dispatch.sh` builds and compares the tail-threaded back end against the generic loop. It
+exists so that the methodology is not something to remember: it interleaves the two modes
+round-robin rather than running all of one and then the other, reports best-of, and prints the
+run-to-run spread next to every timing so that an effect narrower than the noise is visibly not a
+result. It refuses to print a table when either mode returns wrong CRCs or exits non-zero.
+`ROUNDS`, `CORE` and `COREMARK_REPEAT` control it.
+
+`profile-dispatch.sh` runs `perf stat` over both modes and normalises every counter **per guest
+instruction**, which is the only unit in which the two are comparable. The denominator is not
+guessed: `COREMARK_HISTOGRAM` counts the dynamic instruction mix exactly, so the script derives a
+true cycles-per-guest-instruction figure. It probes which PMU events the machine has rather than
+assuming, so the AMD-specific indirect-branch counters appear when they exist and are skipped when
+they do not. It finishes with a flat per-handler profile — tail calls mean there are no stack
+frames, so self-cost is all there is, which is what is wanted.
+
+Both find the binary by asking cargo where it put it, so `CARGO_TARGET_DIR`, `build.target-dir` and
+`--target` all work.
+
+Individual runs, if needed — set `COREMARK_DISPATCH` to anything for the threaded back end, leave it
+unset for the generic loop.
 
 Features: `dispatch-basic`, `dispatch-branchless`, `dispatch-zerostore` pick the register file, and
 `dispatch-preserve-none` is orthogonal to all three and picks the ABI. `build-elf-required` makes a
@@ -604,7 +608,7 @@ sandbox happened to allocate in one session; "Xeon B" was a different 4-core Sky
 treat numbers from a previous one as a different experiment, not a baseline. The machine changed
 mid-session at least once while these notes were being written, from a 2.8 GHz Skylake-SP to a
 2.1 GHz one, which moved every speedup by roughly 10% with no code change at all.
-`run-dispatch-bins.sh` prints the CPU for exactly this reason.
+`bench-dispatch.sh` and `profile-dispatch.sh` print the CPU for exactly this reason.
 
 Within a single session the run-to-run spread on Xeon B was 3–7% best-to-worst across seven
 interleaved rounds at `COREMARK_ITERATIONS=3000`, and 7–16% at 300, because a run that short is
@@ -638,6 +642,7 @@ turns out to be, it is the floor an effect has to clear before it means anything
    enum's contract and every instruction that produces it.
 7. ~~**`branchless` versus `zerostore` register files.**~~ **Answered: `zerostore`.** It beat `basic`
    by 6.3% with `-C target-cpu=znver4` and 8.8% on the default build, with `branchless` between them
-   at −2.3% rather than level with it. Neither Xeon could separate the three. Since they are a type
-   parameter rather than separate implementations, the losers cost nothing to keep around as a
-   control, and `run-dispatch-bins.sh` still measures all three.
+   at −2.3% rather than level with it. Neither Xeon could separate the three. `ZeroStoreRegisters` is
+   now the only one implemented; the other two are in the history of `threaded.rs` up to `e023d69`
+   if the trade ever needs revisiting, which it would if the handler signature changes enough to
+   alter register pressure.
