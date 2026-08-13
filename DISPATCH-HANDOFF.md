@@ -356,13 +356,29 @@ On `claude/risc-v-dispatch-perf-6qtcdo`, from the workspace root:
 
 ```bash
 COREMARK_ITERATIONS=3000 ./crates/execution/ab-riscv-coremark-runner/build-dispatch-bins.sh
-COREMARK_DISPATCH=zerostore taskset -c <core> ./dispatch-bins/zerostore-pn
+ROUNDS=5 CORE=<core> ./crates/execution/ab-riscv-coremark-runner/run-dispatch-bins.sh
 ```
 
 `build-dispatch-bins.sh` builds the cross product of axes 3 and 4 — six binaries named
 `{basic,branchless,zerostore}[-pn]` — one per configuration, so that no two sets of handlers ever
 share a text section. Each also contains the generic interpreter loop, which is the **baseline**:
 run it by leaving `COREMARK_DISPATCH` unset.
+
+`run-dispatch-bins.sh` runs all of them and prints one table. It exists so that the methodology is
+not something to remember: it interleaves the configurations round-robin across rounds rather than
+running all of one and then all of the next, reports best-of, and prints the run-to-run spread next
+to every timing so that an effect narrower than the noise is visibly not a result. It also refuses
+to produce a table at all when the comparison would be invalid — wrong CRCs from any configuration,
+or binaries built with different `COREMARK_ITERATIONS`, which is easy to do accidentally because the
+count is baked in at build time and a partial rebuild leaves the set incomparable. `ROUNDS`, `CORE`,
+`COREMARK_REPEAT`, `ONLY` and `SKIP_BASELINE` control it; running it by hand instead is how
+non-comparable numbers get made.
+
+Individual runs, if needed:
+
+```bash
+COREMARK_DISPATCH=zerostore taskset -c <core> ./dispatch-bins/zerostore-pn
+```
 
 Features: `dispatch-basic`, `dispatch-branchless`, `dispatch-zerostore` pick the register file, and
 `dispatch-preserve-none` is orthogonal to all three and picks the ABI. `build-elf-required` makes a
@@ -444,9 +460,15 @@ performance questions. Every performance claim needs confirming on Zen 4 built w
 **Sandbox sessions do not even get the same machine twice.** "Xeon A" in §3 was a Skylake-SP the
 sandbox happened to allocate in one session; "Xeon B" was a different 4-core Skylake-SP
 (family 6 model 85, 2.8 GHz, KVM guest) in another. Check `lscpu` at the start of a session and
-treat numbers from a previous one as a different experiment, not a baseline. Within a single session
-the run-to-run spread on Xeon B was 3–7% best-to-worst across seven interleaved rounds, which is the
-floor any effect has to clear before it means anything.
+treat numbers from a previous one as a different experiment, not a baseline. The machine changed
+mid-session at least once while these notes were being written, from a 2.8 GHz Skylake-SP to a
+2.1 GHz one, which moved every speedup by roughly 10% with no code change at all.
+`run-dispatch-bins.sh` prints the CPU for exactly this reason.
+
+Within a single session the run-to-run spread on Xeon B was 3–7% best-to-worst across seven
+interleaved rounds at `COREMARK_ITERATIONS=3000`, and 7–16% at 300, because a run that short is
+dominated by process start-up and ELF decoding rather than by the interpreter. Whatever the spread
+turns out to be, it is the floor an effect has to clear before it means anything.
 
 ## 7. Open questions
 
