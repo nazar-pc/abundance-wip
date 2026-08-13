@@ -180,9 +180,43 @@ session at `COREMARK_ITERATIONS=3000`, so read it only down its own column.
 | `basic` | `become` | safe generic | basic | Rust | 0.138 s / 3.40x | 1.385 s / 2.78x | 2500 |
 | `branchless` | `become` | safe generic | branchless | Rust | 0.141 s / 3.33x | 1.436 s / 2.68x | **2666** |
 | `zerostore` | `become` | safe generic | zerostore | Rust | 0.134 s / 3.50x | 1.370 s / 2.81x | **2666** |
-| `basic-pn` | `become` | safe generic | basic | preserve-none | — | 1.399 s / 2.76x | ? |
-| `branchless-pn` | `become` | safe generic | branchless | preserve-none | — | 1.436 s / 2.69x | ? |
-| `zerostore-pn` | `become` | safe generic | zerostore | preserve-none | — | 1.371 s / 2.81x | ? |
+
+### Zen 4, and what it settled
+
+Threadripper 7970X, pinned, `COREMARK_ITERATIONS=3000`, five interleaved rounds, median seconds.
+This is the run that answers axes 3 and 4, because it is the only machine whose spread (0.6–3.6%)
+is narrower than the effects being compared.
+
+| configuration | `-C target-cpu=znver4` | default | vs `basic` |
+|---|---|---|---|
+| generic loop | 2.282 | 2.294 | — |
+| `basic` | 1.219 | 1.221 | — |
+| `branchless` | 1.190 | 1.194 | −2.3% |
+| `zerostore` | **1.142** | **1.113** | −6.3% / −8.8% |
+| `basic-pn` | 1.202 | 1.212 | −1.4% / −0.7% |
+| `branchless-pn` | 1.249 | 1.226 | +5.0% / +2.7% vs `branchless` |
+| `zerostore-pn` | 1.229 | 1.217 | +7.6% / +9.3% vs `zerostore` |
+
+Three things fall out of it:
+
+- **`zerostore` is the register file.** It wins on both builds, by 6–9% over `basic`, with
+  `branchless` sitting between them rather than level with `zerostore`. Axis 3 is settled.
+- **The whole tail-threaded family is worth about 1.9–2.1x on Zen 4, not the 3.4x the Xeons show.**
+  That is not a regression, it is Zen 4's wider out-of-order engine coping better with the generic
+  loop's big `match`, so the baseline it is measured against is relatively stronger. The earlier
+  score-based Zen 4 column says the same thing: 2500/1333 is also 1.88x.
+- **`-C target-cpu=znver4` buys nothing here**, and on the fastest configuration the default build is
+  2.5% *ahead*. That is close to the spread, so it is a hint rather than a finding, but it means
+  znver4 should not be assumed to be the build that matters.
+
+### The preserve-none argument-order trap
+
+The first preserve-none attempt lost on Zen 4, and lost *in proportion to the text it added*:
++2.0% text cost `basic` nothing, +3.7% cost `branchless` ~3%, +6.8% cost `zerostore` ~8%. That is a
+clean enough correlation to name the mechanism, and the mechanism turned out to be fixable — see §4.
+After putting the coldest arguments first, preserve-none produces **smaller** text than
+`extern "Rust"` in every configuration, so the Zen 4 numbers above are for the *superseded*
+argument order and the question is open again on better terms.
 
 Read down the columns rather than across the rows, and the numbers say something the flat list
 hides:
@@ -192,11 +226,10 @@ hides:
   measurable — 0.134 vs 0.138 s on Xeon A, identical on Zen 4 — and once the register file varies,
   the safe variants are *ahead* on Zen 4. Raw pointers and owned memory bought nothing.
 - **Almost the entire win is axis 1**, and most of that is `call` → `become` (2.81x → 3.50x).
-- **Axis 3 is worth roughly 6% on Zen 4** and nothing on either Xeon, which is a good illustration
-  of why only Zen 4 numbers count (§6).
-- **Axis 4 is inside the noise on Xeon B**: every preserve-none delta is under 1% against a 3–7%
-  run-to-run spread, so that column says "no signal here", not "no effect". It has never been run on
-  Zen 4, and §4 gives a concrete reason to expect the two machines to disagree.
+- **Axis 3 is worth 6–9% on Zen 4** and nothing on either Xeon, which is a good illustration of why
+  only Zen 4 numbers count (§6).
+- **Axis 4 is inside the noise on both Xeons**, and decisive on Zen 4. Every preserve-none delta on
+  a Xeon is under 1% against a 3–7% spread; on Zen 4 the same binaries lose by up to 9%.
 
 The `xeon B` speedups are lower than `xeon A`'s across the board because the *baseline* got faster
 — the generic loop picked up the "instructions describe control flow" refactor in the meantime —
@@ -281,29 +314,60 @@ CRCs.
 Roughly a fifth to a quarter of handlers were spilling callee-saved registers under `extern "Rust"`;
 preserve-none removes essentially all of it.
 
-**But every configuration gets 2–7% larger in text.** This is not a wash on instruction count — it
-is an encoding effect, and it is specific to x86-64. LLVM's `preserve_none` passes arguments in
-**R12, R13, R14, R15, RDI, RSI, RDX, RCX, R8, R9, R11, RAX** — twelve registers rather than six,
-but with the high registers *first*. R12 as a base register always costs an extra SIB byte and R13
-always costs an extra displacement byte, so every access through the instruction pointer or the
-register file pays one to two bytes it did not pay before. Compare the same `Add` handler:
+**Argument order is load-bearing, and getting it wrong costs more than the prologues are worth.**
+LLVM's `preserve_none` passes arguments in **R12, R13, R14, R15, RDI, RSI, RDX, RCX, R8, R9, R11,
+RAX** — twelve registers rather than six, but with the high registers *first*. On x86-64 those are
+exactly the registers that encode worst: a memory operand based on **R12 always costs an extra SIB
+byte**, and one based on **R13 always costs an extra displacement byte**. Both are unavoidable
+properties of ModRM, not something the register allocator can route around.
+
+The obvious signature puts the two hottest pointers — the instruction pointer, dereferenced by every
+handler to read its operands, and the register file, dereferenced by nearly all of them — in exactly
+those two positions, so every single dereference pays. That cost every configuration 2–7% more text
+and, on Zen 4, up to 9% in time.
+
+The fix is to order the parameters **coldest first**, so that the arguments this interpreter never
+dereferences absorb R12 and R13, and the hot pointers land in RDI and RSI. The same `Add` handler,
+across all three:
 
 ```
-extern "Rust"                                extern "rust-preserve-none"
-  movzbl 0x2(%rdi),%r10d          5 bytes      movzbl 0x2(%r12),%ecx           6 bytes
-  mov    (%rsi,%r10,8),%r10       4 bytes      mov    0x0(%r13,%rcx,8),%rcx    5 bytes
+extern "Rust"                     preserve-none, hot first        preserve-none, cold first
+  movzbl 0x2(%rdi),%r10d   5 B      movzbl 0x2(%r12),%ecx    6 B     movzbl 0x2(%rdi),%eax   4 B
+  mov    (%rsi,%r10,8),%r10 4 B     mov 0x0(%r13,%rcx,8),%rcx 5 B    mov (%rsi,%rcx,8),%rcx  4 B
 ```
 
-Both end in `jmp *(%reg,%rax,8)`, so both are genuine sibling calls.
+Cold-first is *smaller than `extern "Rust"`*, not merely even with it, because preserve-none leaves
+more scratch registers free, so LLVM picks low registers (`eax`, `ecx`) for temporaries and drops
+the REX prefix that `r10d`/`r11d` forced. All three end in `jmp *(%reg,%rax,8)`, so all three are
+genuine sibling calls.
 
-So preserve-none trades **instruction count for code density**, and which side wins is a throughput
-versus instruction-cache question. §2 already established that this loop is throughput-bound rather
-than misprediction-bound, which argues for preserve-none; but it also established that the loop is
-sensitive to text size (89→147 arms cost `match` +11% on work that never touched the added arms),
-which argues against. Those two pull in opposite directions and the balance is
-microarchitecture-specific, so **only Zen 4 can settle it**. Note that the twelve argument registers
-are not currently being used for anything — the handler signature takes six — so if preserve-none
-does win, there is a second question behind it about what else could be kept in registers.
+Across the 140 generated handlers, with the ordering fixed:
+
+| configuration | instructions | text bytes | handlers with push/pop | text vs `extern "Rust"` |
+|---|---|---|---|---|
+| `basic` | 4162 | 12064 | 34 | — |
+| `basic-pn` | 4141 | 11296 | 2 | **−6.4%** |
+| `branchless` | 3544 | 11216 | 31 | — |
+| `branchless-pn` | 3425 | 10096 | 2 | **−10.0%** |
+| `zerostore` | 3250 | 10176 | 27 | — |
+| `zerostore-pn` | 3268 | 9552 | 3 | **−6.1%** |
+
+Before the reorder those last figures were +2.0%, +3.7% and +6.8%, so a pure argument permutation
+moved text size by 8–17 percentage points. Instruction counts are within ~3% of the `extern "Rust"`
+build either way; the prologue removal holds in both.
+
+That leaves preserve-none strictly better on paper — same instruction count, almost no prologues,
+6–10% less text — which is a different proposition from the one Zen 4 rejected, and needs
+re-measuring there. §2 established that this loop is throughput-bound *and* sensitive to text size,
+and cold-first is now on the right side of both.
+
+Two things to carry:
+
+- The twelve argument registers are still not being used for anything; the signature takes six. If
+  preserve-none wins, the question behind it is what else could live in a register.
+- This is an x86-64 problem specifically. aarch64 and riscv64 encode all their registers uniformly,
+  so the penalty does not exist there and argument order should not matter — worth confirming rather
+  than assuming, if either becomes a host target.
 
 ### Type layout
 
@@ -472,14 +536,17 @@ turns out to be, it is the floor an effect has to clear before it means anything
 
 ## 7. Open questions
 
-1. **Does `extern "rust-preserve-none"` pay on Zen 4?** (§4). Built and correct; it removes the
-   prologue from a fifth to a quarter of handlers but costs 2–7% in text size, and those pull
-   opposite ways. No signal on either Xeon. This is the one question that is *ready to run* — six
-   binaries, one command — and it gates question 2.
+1. **Does `extern "rust-preserve-none"` pay on Zen 4 now that the arguments are ordered coldest
+   first?** (§4). The first attempt lost by up to 9% because the hot pointers sat in R12/R13 and
+   paid an encoding tax on every dereference. With that fixed it produces 6–10% *less* text than
+   `extern "Rust"` at the same instruction count and with the prologues still gone, which is the
+   opposite trade to the one Zen 4 rejected. Ready to run — six binaries, one command.
 2. **If it does, what goes in the freed registers?** preserve-none offers twelve argument registers
    on x86-64 and the handler signature uses six. Candidates: the stream base and bounds, which are
    currently reached through `&Stream`, and the `Ext` fields. Beware §4's register-pressure cliff —
    this is exactly the kind of change that measured +7%/+13%/−50% depending on codegen configuration.
+   Note also that anything added lands in R14/R15 next, which are cheaper than R12/R13 but still
+   cost a REX byte where RDI/RSI would not.
 3. **How handlers are reached.** A handler pointer stored inline in the decoded stream, at 16 bytes
    per instruction, versus a discriminant plus a table lookup. Trades I-cache and D-cache footprint
    against one dependent load per dispatch. Unmeasured.
@@ -491,9 +558,8 @@ turns out to be, it is the floor an effect has to clear before it means anything
 6. **Whether `Branch` should be relative to the *next* instruction** rather than this one. It would
    remove a `- instruction_size` from every relative branch, at the cost of changing the shared
    enum's contract and every instruction that produces it.
-7. **`branchless` versus `zerostore` register files** (axis 3 in §3). Both beat the basic one on
-   Zen 4 by roughly 6% and neither showed a difference on either Xeon, so which one wins is an open
-   question that only Zen 4 can answer. They are a type parameter, not separate implementations.
-   Both Xeons put `branchless` slowest and `zerostore` fastest, which is the *opposite* of Zen 4
-   putting `branchless` and `zerostore` level and both ahead of `basic` — but the Xeon spreads are
-   inside the noise, so that disagreement is not evidence of anything either.
+7. ~~**`branchless` versus `zerostore` register files.**~~ **Answered: `zerostore`.** It beat `basic`
+   by 6.3% with `-C target-cpu=znver4` and 8.8% on the default build, with `branchless` between them
+   at −2.3% rather than level with it. Neither Xeon could separate the three. Since they are a type
+   parameter rather than separate implementations, the losers cost nothing to keep around as a
+   control, and `run-dispatch-bins.sh` still measures all three.

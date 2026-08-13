@@ -371,14 +371,25 @@ type SafeHandler<Regs, Memory> = for<'a> extern "Rust" fn(
 /// anything — which is the right shape for a tail-threaded chain, where a handler never returns to
 /// its caller and so has nothing to restore for it. On x86-64 it also passes arguments in twelve
 /// registers rather than six.
+///
+/// **The arguments are in the opposite order to the `extern "Rust"` handler above, coldest first,
+/// and that is load-bearing.** `preserve_none` passes arguments in R12, R13, R14, R15, RDI, RSI,
+/// ... — the high registers first, and those are exactly the ones x86-64 encodes worst: a memory
+/// operand based on R12 always costs an extra SIB byte and one based on R13 always costs an extra
+/// displacement byte. Putting the hot pointers in the first two positions therefore taxes every
+/// dereference of them, which measured as 2–7% more text and, on Zen 4, a loss of up to 9%.
+///
+/// So the two arguments this interpreter never dereferences go first and absorb the penalty, and
+/// the instruction pointer and register file — dereferenced by nearly every handler — go last,
+/// where they land in RDI and RSI and encode as cheaply as they did under `extern "Rust"`.
 #[cfg(feature = "dispatch-preserve-none")]
 type SafeHandler<Regs, Memory> = for<'a> extern "rust-preserve-none" fn(
-    Ip<'a>,
-    &mut Regs,
-    &mut Memory,
+    &mut Sys,
     &mut Ext,
     &Stream<'a>,
-    &mut Sys,
+    &mut Memory,
+    Ip<'a>,
+    &mut Regs,
 ) -> SafeNext<'a>;
 
 /// The calling convention [`emit_safe_handlers`] gives every handler it generates.
@@ -578,7 +589,12 @@ macro_rules! emit_safe_handlers_with_abi {
         mod safe_handlers {
             use super::*;
 
+            // The two handler definitions below differ only in the order of their arguments, which
+            // has to match whichever `SafeHandler` is in scope. Everything between the signature
+            // and the tail call is identical and has to stay that way; it is duplicated rather
+            // than factored out because a parameter list cannot be spliced in from another macro.
             $(
+                #[cfg(not(feature = "dispatch-preserve-none"))]
                 #[expect(non_snake_case, reason = "One handler per instruction variant")]
                 #[allow(
                     unused_variables,
@@ -617,8 +633,49 @@ macro_rules! emit_safe_handlers_with_abi {
                         $ctx.sys,
                     )
                 }
+
+                #[cfg(feature = "dispatch-preserve-none")]
+                #[expect(non_snake_case, reason = "One handler per instruction variant")]
+                #[allow(
+                    unused_variables,
+                    unreachable_code,
+                    reason = "Unconditional jumps do not use the advanced pointer, and trapping \
+                        instructions never reach it"
+                )]
+                pub(super) extern $abi fn $name<'a, Regs, Memory>(
+                    sys: &mut Sys,
+                    ext: &mut Ext,
+                    stream: &Stream<'a>,
+                    memory: &mut Memory,
+                    $ip: Ip<'a>,
+                    regs: &mut Regs,
+                ) -> SafeNext<'a>
+                where
+                    Regs: RegisterFile<R>,
+                    Memory: VirtualMemory,
+                {
+                    let I::$name { $($field,)* .. } = *$ip.get() else {
+                        // SAFETY: this handler is only ever reached for its own variant
+                        unsafe { unreachable_unchecked() }
+                    };
+                    let $ctx = Env { regs, memory, ext, stream, sys };
+                    // SAFETY: the decoded stream ends with a jump, so anything that can fall
+                    // through has at least this many slots left
+                    let $next = unsafe { $ip.advance($slots) };
+                    let $next = $body;
+                    let handler = table::<Regs, Memory>($next);
+                    become handler(
+                        $ctx.sys,
+                        $ctx.ext,
+                        $ctx.stream,
+                        $ctx.memory,
+                        $next,
+                        $ctx.regs,
+                    )
+                }
             )*
 
+            #[cfg(not(feature = "dispatch-preserve-none"))]
             pub(super) extern $abi fn unsupported<'a, Regs, Memory>(
                 ip: Ip<'a>,
                 _regs: &mut Regs,
@@ -626,6 +683,24 @@ macro_rules! emit_safe_handlers_with_abi {
                 ext: &mut Ext,
                 _stream: &Stream<'a>,
                 _sys: &mut Sys,
+            ) -> SafeNext<'a>
+            where
+                Regs: RegisterFile<R>,
+                Memory: VirtualMemory,
+            {
+                cold_path();
+                ext.stop = Stop::Unsupported(u16::from(ip.discriminant()));
+                None
+            }
+
+            #[cfg(feature = "dispatch-preserve-none")]
+            pub(super) extern $abi fn unsupported<'a, Regs, Memory>(
+                _sys: &mut Sys,
+                ext: &mut Ext,
+                _stream: &Stream<'a>,
+                _memory: &mut Memory,
+                ip: Ip<'a>,
+                _regs: &mut Regs,
             ) -> SafeNext<'a>
             where
                 Regs: RegisterFile<R>,
@@ -809,7 +884,10 @@ where
         return Stop::BadJump;
     };
     let handler = table::<Regs, Memory>(ip);
+    #[cfg(not(feature = "dispatch-preserve-none"))]
     handler(ip, regs, memory, &mut ext, &stream, &mut sys);
+    #[cfg(feature = "dispatch-preserve-none")]
+    handler(&mut sys, &mut ext, &stream, memory, ip, regs);
 
     ext.stop
 }
