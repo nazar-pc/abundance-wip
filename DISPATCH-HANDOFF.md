@@ -623,34 +623,48 @@ turns out to be, it is the floor an effect has to clear before it means anything
    tie is a reason not to take it. Revisit **only** when the handler signature grows past six
    arguments (§4), which is the case where `extern "Rust"` starts spilling and preserve-none's
    twelve registers actually pay for themselves.
-2. **What is the loop limited by?** Partly answered, and the answer redirects the rest of this
-   list. Profiled on Zen 4 (`profile-dispatch.sh`), per guest instruction:
+2. **What is the loop limited by?** Narrowed, not yet answered. Profiled on Zen 4
+   (`profile-dispatch.sh`), per guest instruction:
 
-   | mode | cycles | host-insn | IPC | br-miss | ind-mispred | i$-miss | d$-miss |
-   |---|---|---|---|---|---|---|---|
-   | generic | 11.29 | 44.59 | 3.95 | 0.0041 | 0.0025 | 0.0000 | 0.0008 |
-   | threaded | 6.15 | 11.76 | 1.91 | 0.0121 | 0.0112 | 0.0000 | 0.0007 |
+   | mode | cycles | host-insn | IPC | ind-mispred | i$-miss | d$-miss | loads | stores | stlf |
+   |---|---|---|---|---|---|---|---|---|---|
+   | generic | 11.35 | 44.57 | 3.93 | 0.0038 | 0.0000 | 0.0018 | 8.03 | 1.43 | 0.31 |
+   | threaded | 6.23 | 11.74 | 1.88 | 0.0097 | 0.0000 | 0.0013 | 6.56 | 1.57 | 0.36 |
 
-   - **Not the caches.** Both miss rates are essentially zero. The ~10 KB of handlers sit inside
-     Zen 4's 32 KB L1i, and CoreMark's working set sits inside L1d.
-   - **Not misprediction.** 0.0112 indirect mispredicts per guest instruction, at ~18–20 cycles, is
-     0.20–0.22 cycles of 6.15 — about 3.5%. Note that essentially *all* mispredicts are indirect
-     (0.0112 of 0.0121): the guest's own conditional branches are folded into the dispatch jump's
-     target, and the predictor handles them well.
-   - **Not issue width.** IPC 1.91 on a six-wide core with the frontend idle means the loop is
-     waiting, not saturating.
-   - What is left is the **dependency chain through the register file**, which lives in memory: a
-     guest instruction stores its result and the next one loads it back, so each dependent guest
-     instruction pays a store-to-load forward. Zen 4's is ~4–6 cycles, and 6.15 is suspiciously
-     close to one per instruction. `profile-dispatch.sh` now reports `loads`, `stores` and `stlf`
-     per guest instruction to confirm or kill this directly.
+   Ruled out: **caches** (both miss rates ~0 — the ~10 KB of handlers sit inside Zen 4's 32 KB L1i
+   and CoreMark's working set inside L1d); **misprediction** (0.0097 indirect mispredicts at ~18–20
+   cycles is ~3% of 6.23, and note that nearly all mispredicts are indirect, so the guest's own
+   conditional branches fold into the dispatch target and predict well); **issue width** (IPC 1.88
+   on a six-wide core).
 
-   Two consequences for the rest of the list. Question 3 — a handler pointer inline in the stream to
-   remove the table lookup — is **not worth doing**: it shortens a chain that prediction already
-   hides, and 3.5% is the entire budget it could win from. And the generic loop's IPC of 3.95
-   against threaded's 1.91 is a warning about the metric, not a defect: the `match` loop reached
-   above 5 while being slower, because a universal operand preamble is both useless and independent,
-   which is precisely what inflates IPC.
+   **There is a large unexplained stall.** Memory ops are 8.13 per guest instruction, which at ~3
+   per cycle is 2.7 cycles, and 11.74 instructions at six-wide is 2.0 — so the throughput floor is
+   about 2.7 cycles against 6.23 actual. More than half the time is spent waiting.
+
+   The register-file round trip is real but does not obviously account for it: `stlf` is 0.36 per
+   guest instruction, so only a third of instructions forward from a recent store, and a successful
+   forward costs about what an L1d hit costs anyway. `stlf-fail` — the expensive case — was added
+   after this run and is not yet measured.
+
+   Worth carrying: **roughly 60% of the loads are interpretation overhead rather than guest data.**
+   Of ~6.56, about three read operand bytes out of the decoded instruction, one reads the next
+   discriminant, and one reads the dispatch table; only about two are guest register reads. And
+   reading a guest register is a *dependent pair* of loads — the register index has to be loaded out
+   of the instruction before the register value can be loaded — which is the deepest serial
+   structure in the loop.
+
+   Also note the threaded loop issues *more* stores than the generic one (1.57 vs 1.43), which is
+   `ZeroStoreRegisters` paying two stores per register write. It won anyway, so this is an
+   observation rather than a complaint.
+
+   **Next measurement, not next change:** the per-handler cycle attribution. The first attempt
+   silently produced nothing — `perf annotate` was passed a shortened symbol name and needs the full
+   one — which is fixed, along with preferring `cycles:pp` so that AMD IBS attributes precisely
+   rather than with skid. Inside a twelve-instruction handler that is the difference between
+   locating the stall and guessing at it. Nothing else here should be decided before it is run.
+
+   One consequence already: question 3 is dropped, see below.
+
 3. ~~**How handlers are reached.**~~ **Dropped**, see question 2: an inline handler pointer removes
    a dependent load from a chain the branch predictor already hides, and the entire misprediction
    budget it could recover is 3.5%. It would also double the decoded stream's footprint.

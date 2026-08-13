@@ -32,6 +32,10 @@
 #                          slot, and `stlf` counts exactly those store-to-load forwards. If it is
 #                          near the number of guest instructions with a register dependency, the
 #                          critical path is the register file round trip rather than dispatch.
+#                          `stlf-fail` is the expensive case: a load that could not be forwarded and
+#                          had to wait for the store to reach the cache, which costs far more than a
+#                          successful forward. It should be near zero, because every register-file
+#                          access is naturally aligned and the same width.
 #
 # Usage:
 #   ./profile-dispatch.sh
@@ -107,7 +111,7 @@ for event in \
     L1-dcache-loads L1-dcache-load-misses L1-icache-load-misses \
     iTLB-load-misses dTLB-load-misses \
     ex_ret_brn_ind_misp ex_ret_ind_brch_instr \
-    ls_dispatch.ld_dispatch ls_dispatch.store_dispatch ls_stlf
+    ls_dispatch.ld_dispatch ls_dispatch.store_dispatch ls_stlf ls_bad_status2.stli_other
 do
     if perf stat -e "$event" true >/dev/null 2>&1; then
         EVENTS="$EVENTS,$event"
@@ -150,6 +154,8 @@ stat_mode() {
             if (st >= 0) { printf " %8.2f", st / guest } else { printf " %8s", "n/a" }
             stlf = ("ls_stlf" in v) ? v["ls_stlf"] : -1
             if (stlf >= 0) { printf " %8.2f", stlf / guest } else { printf " %8s", "n/a" }
+            bad = ("ls_bad_status2.stli_other" in v) ? v["ls_bad_status2.stli_other"] : -1
+            if (bad >= 0) { printf " %9.4f", bad / guest } else { printf " %9s", "n/a" }
             printf "\n"
         }' "$out"
 
@@ -158,8 +164,8 @@ stat_mode() {
 
 echo "All columns are per guest instruction, except IPC."
 echo
-printf "%-10s %10s %10s %8s %10s %12s %10s %10s %8s %8s %8s\n" \
-    mode cycles host-insn IPC br-miss ind-mispred i\$-miss d\$-miss loads stores stlf
+printf "%-10s %10s %10s %8s %10s %12s %10s %10s %8s %8s %8s %9s\n" \
+    mode cycles host-insn IPC br-miss ind-mispred i\$-miss d\$-miss loads stores stlf stlf-fail
 stat_mode generic
 stat_mode threaded
 
@@ -169,7 +175,19 @@ if [ -z "$SKIP_RECORD" ]; then
     echo "flat self-costs, which is exactly what is wanted here."
     echo
     data=$(mktemp)
-    COREMARK_DISPATCH=1 perf record -F 4000 -o "$data" --quiet \
+
+    # Plain `cycles` samples land a variable distance past the instruction that actually stalled,
+    # which is useless inside a twelve-instruction handler. `cycles:pp` maps to IBS on AMD and to
+    # PEBS on Intel and attributes precisely, so prefer it and say which was used.
+    probe=$(mktemp)
+    if perf record -e cycles:pp -o "$probe" --quiet true >/dev/null 2>&1; then
+        SAMPLE_EVENT=cycles:pp
+    else
+        SAMPLE_EVENT=cycles
+    fi
+    rm -f "$probe" "$probe.old" 2>/dev/null || true
+
+    COREMARK_DISPATCH=1 perf record -e "$SAMPLE_EVENT" -F 4000 -o "$data" --quiet \
         taskset -c "$CORE" "$BIN" >/dev/null 2>&1 || true
     perf report -i "$data" --stdio --no-children --percent-limit 0.8 2>/dev/null \
         | grep -E "^ +[0-9]" \
@@ -177,18 +195,19 @@ if [ -z "$SKIP_RECORD" ]; then
               -e 's/::<.*>//' \
         | head -25
 
-    # Where inside a handler the cycles land. Sampling skid means an instruction is blamed a little
-    # after the one that actually stalled, so read this as "the stall is around here", not "on this
-    # instruction" — but it is enough to tell a register-file access from the dispatch jump.
-    hottest=$(perf report -i "$data" --stdio --no-children --percent-limit 0.8 2>/dev/null \
-        | grep -oE "safe_handlers::[A-Za-z0-9_]+" | head -1 | sed 's/safe_handlers:://')
-
-    if [ -n "$hottest" ]; then
-        echo
-        echo "Cycle attribution inside the hottest handler ($hottest):"
-        echo
-        perf annotate -i "$data" --stdio --percent-limit 1 "$hottest" 2>/dev/null | head -40 || true
+    echo
+    echo "Cycle attribution inside the hottest handlers, sampled with $SAMPLE_EVENT."
+    if [ "$SAMPLE_EVENT" = cycles ]; then
+        echo "Not a precise event, so read it as 'the stall is around here', not 'on this line'."
     fi
+    echo
+    # No symbol argument on purpose: perf wants the full mangled-and-demangled name including the
+    # generic arguments, and passing a shortened one silently annotates nothing. Letting it walk
+    # every symbol above the limit cannot miss, and the hottest comes out first.
+    perf annotate --stdio -i "$data" --percent-limit 2 2>/dev/null \
+        | sed -e 's/ab_riscv_coremark_runner::threaded::safe_handlers:://' \
+              -e 's/::<.*>//' \
+        | head -70 || true
 
     rm -f "$data" "$data.old" 2>/dev/null || true
 fi
