@@ -615,7 +615,22 @@ interleaved rounds at `COREMARK_ITERATIONS=3000`, and 7–16% at 300, because a 
 dominated by process start-up and ELF decoding rather than by the interpreter. Whatever the spread
 turns out to be, it is the floor an effect has to clear before it means anything.
 
-## 7. Open questions
+## 7. Where this stands
+
+The exploration has answered what it set out to answer. The back end to build is settled — safe
+generic per-instruction handlers, dispatched with `become`, register file as a type parameter — and
+the alternatives that lost are recorded in §3 with the measurements that killed them. Dispatch is no
+longer what limits the loop: it costs 6.14 cycles per guest instruction against the generic loop's
+11.34, with caches, branch prediction and issue width all ruled out, and what remains is a
+store-forwarding problem in the register file rather than anything about how handlers are reached.
+
+**The next piece of work is implementation, not measurement**: the emitter in `ab-riscv-macros` that
+turns the per-variant arms it already extracts into standalone handler functions (§3). The
+prototype is the reference for what it should produce. The case worth proving while building it is
+the ~500-variant vector composition, question 5 below, because that is where the existing regression
+lives and where the `match` back end is known to degrade while handlers do not.
+
+## 8. Open questions
 
 1. ~~**Does `extern "rust-preserve-none"` pay?**~~ **Answered: not today.** With the arguments
    ordered coldest first it rescues `basic` (−5.6%) and `branchless` (−8.3%), but it ties with
@@ -669,15 +684,27 @@ turns out to be, it is the floor an effect has to clear before it means anything
    cost, and it is only available *because* the stream is decoded ahead of time. Expected to remove
    ~0.8 stores per guest instruction and a large share of the forwarding failures.
 
-   Two smaller things visible in the same listing:
+   **Status: understood, deliberately not acted on yet.** `Reg<Type>` is an enum with one variant
+   per architectural register, not a newtype over an offset, so a 33rd slot is a change to the shared
+   register types rather than something a prototype can fake. The register file and register types
+   are generic on purpose, so an optimised implementation is free to require 33 slots and to rewrite
+   instructions after decoding — the option exists and is worth remembering, but taking it is a
+   design decision about the shared types, not a local experiment.
+
+   Two smaller things visible in the same listing, both closed:
 
    - `leaq` re-materialises the dispatch table address in **every** handler, one instruction in nine.
-     Building without PIE (`-C relocation-model=static`) should fold it into the jump's displacement
-     for free. Alternatively it could be passed as a seventh argument — which is the concrete case
-     for `extern "rust-preserve-none"` that question 1 said to wait for, since `extern "Rust"` has
-     no seventh register and would spill.
+     `-C relocation-model=static` does not build: it applies to every crate including proc-macro
+     dependencies, which must be position-independent, so `syn` fails to link with
+     `R_X86_64_32 ... recompile with -fPIC or link with -no-pie`. Restricting it to the final crate
+     (`cargo rustc -p ab-riscv-coremark-runner --release -- -C relocation-model=static
+     -C link-arg=-no-pie`) would avoid that, but the instruction is independent and the loop is
+     latency-bound, so removing one of eleven instructions is unlikely to show up. Not worth
+     pursuing. The other route — passing the table base as a seventh argument — remains the concrete
+     case for `extern "rust-preserve-none"` noted in question 1.
    - The load and store handlers spend 8–9% on the `VirtualMemory` bounds check (`cmpq`/`jae`).
-     Real, correct, and probably the price of safety, but worth knowing it is that large.
+     **This is required and is not a target.** The interpreter runs blockchain consensus, so bounds
+     checking is part of the correctness contract, not overhead to be optimised away.
 
 3. ~~**How handlers are reached.**~~ **Dropped**, see question 2: an inline handler pointer removes
    a dependent load from a chain the branch predictor already hides, and the entire misprediction
