@@ -3,6 +3,42 @@
 Working notes for replacing the interpreter's central `match` with per-instruction handler
 functions. Everything stated as a measurement was measured; everything else is flagged as untested.
 
+## 0. Start here
+
+**State:** the exploration is finished and the design is settled. Nothing has been implemented in
+`ab-riscv-macros` yet, and doing so is the next piece of work.
+
+**Two documents.** This one is the record of what was measured and why the design is what it is.
+`DISPATCH-PLAN.md` is the implementation plan, reviewed but **not yet approved** — do not start
+building from it without asking.
+
+Read this one first for §2 (why the `match` is slow), §3 (what won and by how much) and §6 (why only
+one machine's numbers count); then read the plan.
+
+**Everything is on branch `claude/risc-v-dispatch-perf-6qtcdo`**, which is a scratchpad and is not
+meant to be merged. The working prototype is
+`crates/execution/ab-riscv-coremark-runner/src/threaded.rs`. The branch is rebased on `main` at
+`068806d`, which matters because `fb1eaaa` in it already extracts per-variant execution functions —
+see the end of §1, and §4 of the plan, which is built on them.
+
+**To reproduce anything here**, you need `gcc-riscv64-unknown-elf` installed and then:
+
+```bash
+COREMARK_ITERATIONS=3000 ROUNDS=5 CORE=<core> \
+    ./crates/execution/ab-riscv-coremark-runner/bench-dispatch.sh
+COREMARK_ITERATIONS=3000 CORE=<core> \
+    ./crates/execution/ab-riscv-coremark-runner/profile-dispatch.sh
+```
+
+Read §5 before running either and §6 before believing any number either produces.
+
+**Three things that will waste your time if you do not know them.** The sandbox changes CPU between
+sessions and sometimes within one, so numbers are only comparable inside a single run of a single
+script (§6). `COREMARK_ITERATIONS` is baked in at build time, so a partial rebuild silently produces
+incomparable binaries (§5). And the build script scans crate sources textually for the instruction
+attribute macro names, so writing one literally in a doc comment makes it try to parse that file as
+an instruction definition — refer to them by name in prose (§1).
+
 ## 1. The interpreter as it exists today
 
 `ab-riscv-interpreter` executes pre-decoded RISC-V. The pieces that matter here:
@@ -68,6 +104,18 @@ expression that is a `match` on literal `self`, and it rejects arms with guards.
 `match` into **per-variant `(variant ident, arm)` pairs**, inserting `ExecutionResult::CONTINUE_ZERO`
 as the tail of any arm that does not end in one explicitly. So the individual arm body — not the
 enclosing `match` — is already the unit the build system stores and manipulates.
+
+**Since `fb1eaaa`, those arms are emitted as standalone functions.** `generate_variant_fns` turns
+each into an `#[inline(always)] fn execute_{enum_snake}_{variant_snake}<..>(..) -> ExecutionResult`
+and replaces the arm body with a call to it, so `execute()` is now a dispatcher over per-variant
+functions rather than a wall of inline bodies. Variant-specific parameters come from what the arm's
+pattern binds, so they differ per variant; the shared ones are taken once from `execute()`'s
+signature, so **every generated function takes `rs1_value` and `rs2_value` whether or not it uses
+them**. That costs the `match` loop nothing, because it reads both anyway — and in a handler the
+`#[inline(always)]` removes it, which is why it is there: an unused register read is a pure load
+with a dead result. That is deliberate and assumed rather than open, but it is load-bearing, so a
+preamble that came back is the first thing to check if handler numbers ever fail to reproduce the
+prototype's.
 
 Those pairs are keyed by enum name in a build-time `state`, and
 `collect_enum_execution_impls_from_dependencies()` pulls them across crate boundaries. The
@@ -525,12 +573,13 @@ Both find the binary by asking cargo where it put it, so `CARGO_TARGET_DIR`, `bu
 Individual runs, if needed — set `COREMARK_DISPATCH` to anything for the threaded back end, leave it
 unset for the generic loop.
 
-Features: `dispatch-basic`, `dispatch-branchless`, `dispatch-zerostore` pick the register file, and
-`dispatch-preserve-none` is orthogonal to all three and picks the ABI. `build-elf-required` makes a
-missing RISC-V toolchain a build error rather than an empty ELF and a confusing run-time message.
+There are no dispatch features left — one configuration survived, so there is nothing to select.
+`build-elf-required` is the only relevant feature, and it makes a missing RISC-V toolchain a build
+error rather than an empty ELF and a confusing run-time message.
 
-Environment variables: `COREMARK_DISPATCH` picks the register file at run time (it must match the
-one compiled in), `COREMARK_ITERATIONS` fixes the amount of work **at build time** (**essential** —
+Environment variables: `COREMARK_DISPATCH` set to any value picks the threaded back end and unset
+picks the generic loop, `COREMARK_ITERATIONS` fixes the amount of work **at build time**
+(**essential** —
 the default of 0 means autodetect, so the workload scales with interpreter speed and results are not
 comparable), `COREMARK_REPEAT` runs the guest N times in-process and reports the best,
 `COREMARK_HISTOGRAM` dumps the dynamic instruction mix.
@@ -626,9 +675,16 @@ store-forwarding problem in the register file rather than anything about how han
 
 **The next piece of work is implementation, not measurement**: the emitter in `ab-riscv-macros` that
 turns the per-variant arms it already extracts into standalone handler functions (§3). The
-prototype is the reference for what it should produce. The case worth proving while building it is
-the ~500-variant vector composition, question 5 below, because that is where the existing regression
-lives and where the `match` back end is known to degrade while handlers do not.
+prototype is the reference for what it should produce, and **`DISPATCH-PLAN.md` is the design for
+it** — reviewed across several rounds but not yet approved to build. The case worth proving while
+building it is the ~500-variant vector composition, question 5 below, because that is where the
+existing regression lives and where the `match` back end is known to degrade while handlers do not.
+
+What is *not* next, and why, is worth stating so it does not get relitigated: superinstructions
+(question 5's data kills them), inline handler pointers (question 3), and `extern "rust-preserve-none"`
+(question 1) were each measured and set aside. The single largest identified win is not a dispatch
+change at all — it is the store-forwarding cost of run-time `x0` handling in question 2, which needs
+a decision about the shared register types rather than an experiment.
 
 ## 8. Open questions
 
