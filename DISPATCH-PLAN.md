@@ -789,11 +789,9 @@ if Windows ever matters. `extern "tail"` says nothing about that: a tail-call co
 from the platform's own is still the platform's register allocation. Pinning remains the answer, and
 whether `become` accepts an explicitly pinned ABI is an unverified detail to check at that point.
 
-> **Correction — `become` does accept a pinned ABI, and the pinning is written but not yet merged.**
-> Windows x86-64 is in this project's CI, so it was not a hypothetical. Handlers and the function
-> pointers dispatch selects between are generated as `extern "sysv64"` there and left on the default
-> convention everywhere else. That change is on `claude/risc-v-dispatch-phases-b3o71k` and is not
-> part of #766.
+> **Correction — done, and `become` does accept a pinned ABI.** Windows x86-64 is in this project's
+> CI, so it was not a hypothetical. Handlers and the function pointers dispatch selects between are
+> generated as `extern "sysv64"` there, and left on the default convention everywhere else.
 >
 > Verified that `become` accepts it, by pinning to `extern "win64"` on Linux x86-64 — a genuinely
 > non-default convention there, so a real test rather than a no-op: it compiles, works through
