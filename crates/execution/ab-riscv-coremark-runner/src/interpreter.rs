@@ -3,6 +3,8 @@ use ab_riscv_interpreter::prelude::*;
 use ab_riscv_primitives::prelude::*;
 use core::ops::ControlFlow;
 use std::hint::cold_path;
+use std::ptr::NonNull;
+use std::{ptr, slice};
 
 /// Flat guest memory
 #[derive(Debug, Copy, Clone)]
@@ -132,15 +134,68 @@ impl<const BASE_ADDR: u64, const SIZE: usize> Default for GuestMemory<BASE_ADDR,
 }
 
 /// Eager instruction handler eagerly decodes all instructions upfront
-#[derive(Debug, Clone)]
+///
+/// Instead of storing decoded instructions in a `Box<[CoremarkInstruction]>` alongside a pointer
+/// into it, the allocation is owned directly through a raw pointer and freed/cloned manually.
+/// `Box` asserts unique (`noalias`) access to its contents, so keeping a second, independently
+/// derived pointer to the same data alive across `Box` accesses is unsound (Miri's aliasing model
+/// flags it); owning the allocation as a raw pointer avoids that conflict entirely, while still
+/// letting the position in the decoded stream be tracked as a plain pointer instead of a byte
+/// offset that needs to be re-added to a base pointer on every fetch.
+#[derive(Debug)]
 #[repr(C, align(16))]
 pub(crate) struct EagerInstructionFetcher {
-    decoded_instruction_byte_offset: usize,
-    // A simple raw pointer separate field helps LLVM with SROA and aliasing analysis, so it can
-    // retain this pointer in the native register
-    instructions: Box<[CoremarkInstruction]>,
+    // The next instruction to be fetched: `fetch_instruction()` advances this past the just-read
+    // instruction, so it never points at the instruction that was last fetched. A simple raw
+    // pointer field also helps LLVM with SROA and aliasing analysis, so it can retain this pointer
+    // in a native register instead of recomputing it from an offset on every fetch
+    next_instruction: NonNull<CoremarkInstruction>,
+    // Start of the owned allocation, used for bounds checks and to free/clone it
+    instructions_ptr: NonNull<CoremarkInstruction>,
+    instructions_len: usize,
     base_addr: u64,
     return_trap_address: u64,
+}
+
+impl Drop for EagerInstructionFetcher {
+    fn drop(&mut self) {
+        // SAFETY: `instructions_ptr`/`instructions_len` were created from `Box::into_raw()` on a
+        // `Box<[CoremarkInstruction]>` of that exact length and are dropped here exactly once
+        drop(unsafe {
+            Box::from_raw(ptr::slice_from_raw_parts_mut(
+                self.instructions_ptr.as_ptr(),
+                self.instructions_len,
+            ))
+        });
+    }
+}
+
+impl Clone for EagerInstructionFetcher {
+    fn clone(&self) -> Self {
+        // SAFETY: `instructions_ptr`/`instructions_len` describe a valid, initialized slice
+        let instructions =
+            unsafe { slice::from_raw_parts(self.instructions_ptr.as_ptr(), self.instructions_len) };
+        let cloned_instructions = Box::<[CoremarkInstruction]>::from(instructions);
+        // Preserve the offset of the next instruction within the cloned allocation
+        let next_instruction_offset =
+            // SAFETY: Both pointers are derived from the same allocation
+            unsafe { self.next_instruction.offset_from(self.instructions_ptr) };
+
+        let instructions_ptr = Box::into_raw(cloned_instructions).cast::<CoremarkInstruction>();
+        // SAFETY: `Box::into_raw()` never returns a null pointer
+        let instructions_ptr = unsafe { NonNull::new_unchecked(instructions_ptr) };
+        // SAFETY: `next_instruction_offset` is in bounds of the original allocation, and the
+        // cloned allocation has the same length
+        let next_instruction = unsafe { instructions_ptr.offset(next_instruction_offset) };
+
+        Self {
+            next_instruction,
+            instructions_ptr,
+            instructions_len: self.instructions_len,
+            base_addr: self.base_addr,
+            return_trap_address: self.return_trap_address,
+        }
+    }
 }
 
 impl<Memory> ProgramCounter<u64, Memory> for EagerInstructionFetcher
@@ -149,8 +204,14 @@ where
 {
     #[inline(always)]
     fn get_pc(&self) -> u64 {
+        let decoded_instruction_byte_offset = self
+            .next_instruction
+            .as_ptr()
+            .addr()
+            .wrapping_sub(self.instructions_ptr.as_ptr().addr());
+
         self.base_addr
-            + self.decoded_instruction_byte_offset as u64 * size_of::<u16>() as u64
+            + decoded_instruction_byte_offset as u64 * size_of::<u16>() as u64
                 / size_of::<CoremarkInstruction>() as u64
     }
 
@@ -175,10 +236,18 @@ where
         let offset = offset as isize - isize::from(instruction_size);
         // Every `size_of::<u16>()` of guest code owns one decoded instruction, so the target is
         // reached by moving within the decoded stream
-        let decoded_instruction_byte_offset =
-            self.decoded_instruction_byte_offset.wrapping_add_signed(
-                offset * (size_of::<CoremarkInstruction>() / size_of::<u16>()).cast_signed(),
-            );
+        let byte_delta =
+            offset * (size_of::<CoremarkInstruction>() / size_of::<u16>()).cast_signed();
+        // This may land outside the decoded stream (including before its start), which is fine:
+        // `wrapping_byte_offset()` only computes an address, it never dereferences the pointer, and
+        // the bounds check below rejects such a target before it is ever used
+        let new_next_instruction = self
+            .next_instruction
+            .as_ptr()
+            .wrapping_byte_offset(byte_delta);
+        let decoded_instruction_byte_offset = new_next_instruction
+            .addr()
+            .wrapping_sub(self.instructions_ptr.as_ptr().addr());
 
         // A target that does not land on a decoded instruction sits between two guest
         // instructions, which makes it an unaligned instruction rather than something to round to
@@ -187,7 +256,7 @@ where
         // the end of the decoded stream, which a backwards branch that ran off its start wraps
         // around into.
         if decoded_instruction_byte_offset
-            >= self.instructions.len() * size_of::<CoremarkInstruction>()
+            >= self.instructions_len * size_of::<CoremarkInstruction>()
             || !decoded_instruction_byte_offset.is_multiple_of(size_of::<CoremarkInstruction>())
         {
             cold_path();
@@ -195,7 +264,9 @@ where
             return self.set_pc(memory, pc.wrapping_add_signed(offset as i64));
         }
 
-        self.decoded_instruction_byte_offset = decoded_instruction_byte_offset;
+        // SAFETY: Just checked that `new_next_instruction` lands exactly on a decoded instruction
+        // within the bounds of the (non-empty) decoded stream
+        self.next_instruction = unsafe { NonNull::new_unchecked(new_next_instruction) };
 
         Ok(ControlFlow::Continue(()))
     }
@@ -229,13 +300,15 @@ where
         let offset = offset as usize;
         let instruction_offset = offset / size_of::<u16>();
 
-        if instruction_offset >= self.instructions.len() {
+        if instruction_offset >= self.instructions_len {
             cold_path();
             return Err(VirtualMemoryError::OutOfBoundsRead { address }.into());
         }
 
-        self.decoded_instruction_byte_offset =
-            instruction_offset * size_of::<CoremarkInstruction>();
+        // SAFETY: `instruction_offset` was just checked to be within bounds of the decoded stream
+        self.next_instruction = unsafe {
+            NonNull::new_unchecked(self.instructions_ptr.as_ptr().add(instruction_offset))
+        };
 
         Ok(ControlFlow::Continue(()))
     }
@@ -253,16 +326,14 @@ where
         // SAFETY: Constructor guarantees that the last instruction is a jump, which means going
         // through `Self::set_pc()` method does the necessary bounds check and advancing forward by
         // one instruction can't result in out-of-bounds access.
-        let instruction = unsafe {
-            // Reading through byte offset rather than index to avoid extra computation (converting
-            // an index to a byte offset) on each fetch
-            self.instructions
-                .as_ptr()
-                .byte_add(self.decoded_instruction_byte_offset)
-                .read()
-        };
-        self.decoded_instruction_byte_offset +=
+        let instruction = unsafe { self.next_instruction.read() };
+        let byte_advance =
             usize::from(instruction.size()) / size_of::<u16>() * size_of::<CoremarkInstruction>();
+        // SAFETY: Same as above: advancing by one instruction from a valid position can't go out of
+        // bounds
+        self.next_instruction = unsafe {
+            NonNull::new_unchecked(self.next_instruction.as_ptr().byte_add(byte_advance))
+        };
 
         FetchInstructionResult::Instruction(instruction)
     }
@@ -286,7 +357,8 @@ impl EagerInstructionFetcher {
         base_addr: u64,
         pc: u64,
     ) -> Self {
-        let mut decoded_instructions = Vec::with_capacity(instructions.len() / size_of::<u16>());
+        let mut decoded_instructions: Vec<CoremarkInstruction> =
+            Vec::with_capacity(instructions.len() / size_of::<u16>());
 
         let mut offset = 0;
         while let Some(instruction_bytes) = instructions.get(offset..offset + size_of::<u32>()) {
@@ -358,11 +430,21 @@ impl EagerInstructionFetcher {
             ));
         }
 
-        let instructions = decoded_instructions.into_boxed_slice();
+        let instructions_len = decoded_instructions.len();
+        let instructions_ptr =
+            Box::into_raw(decoded_instructions.into_boxed_slice()).cast::<CoremarkInstruction>();
+        // SAFETY: `Box::into_raw()` never returns a null pointer
+        let instructions_ptr = unsafe { NonNull::new_unchecked(instructions_ptr) };
+
+        let instruction_offset = (pc - base_addr) as usize / size_of::<u16>();
+        // SAFETY: Constructor's contract guarantees `pc` is valid, meaning `instruction_offset` is
+        // within bounds of the decoded stream
+        let next_instruction = unsafe { instructions_ptr.add(instruction_offset) };
+
         Self {
-            decoded_instruction_byte_offset: (pc - base_addr) as usize / size_of::<u16>()
-                * size_of::<CoremarkInstruction>(),
-            instructions,
+            next_instruction,
+            instructions_ptr,
+            instructions_len,
             base_addr,
             return_trap_address,
         }
