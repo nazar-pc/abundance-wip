@@ -1,6 +1,8 @@
 [package]
 name = "ab-const-fn-specialization"
-description = "Declarative attribute macro for writing a const fn together with a faster non-const specialization"
+description = "Attribute macro for writing a const fn together with a faster non-const specialization"
+repository = "https://github.com/nazar-pc/abundance"
+homepage = "https://github.com/nazar-pc/abundance/tree/main/crates/shared/ab-const-fn-specialization"
 license = "0BSD"
 version = "0.1.0"
 authors = ["Nazar Mokrynskyi <nazar@mokrynskyi.com>"]
@@ -12,6 +14,9 @@ include = [
 
 [package.metadata.docs.rs]
 all-features = true
+
+[dependencies]
+ab-const-fn-specialization-macro = { workspace = true }
 
 [lints]
 workspace = true

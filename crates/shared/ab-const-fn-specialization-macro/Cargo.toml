@@ -1,0 +1,27 @@
+[package]
+name = "ab-const-fn-specialization-macro"
+description = "Implements the attribute macro used by `ab-const-fn-specialization` crate"
+repository = "https://github.com/nazar-pc/abundance"
+homepage = "https://github.com/nazar-pc/abundance/tree/main/crates/shared/ab-const-fn-specialization-macro"
+license = "0BSD"
+version = "0.1.0"
+authors = ["Nazar Mokrynskyi <nazar@mokrynskyi.com>"]
+edition = "2024"
+include = [
+    "/src",
+    "/Cargo.toml",
+]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true, features = ["full"] }
+
+[lints]
+workspace = true
