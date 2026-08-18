@@ -1,19 +1,28 @@
 # Implementation plan: generated per-instruction handlers
 
-Design proposal. **Reviewed but not approved — do not start building from this without asking.**
+**Implemented.** Phases 1 and 2 are on `main`, merged in
+[#766](https://github.com/nazar-pc/abundance-wip/pull/766); Phases 0, 3, 4 and 5 did not happen —
+see §8 for what each of those means in practice.
 
 Companion to `DISPATCH-HANDOFF.md`, which holds the measurements this is built on and which should
 be read first.
 
-Nothing here has been implemented. Code shown is a sketch of intent, not something that has been
-compiled, except where a specific claim says it was checked — §7 records which ones were and what
-the check showed.
+This document is the plan as proposed, corrected in place. Everything the implementation did
+differently is called out in a block quote beginning **"Correction"**, so the reasoning that led to
+the original shape stays readable next to what replaced it. Where a section carries no such block,
+it was built as written. §11 collects what came up during implementation that this plan did not
+anticipate at all.
+
+Code shown outside those blocks is the original sketch of intent, not what was generated. The
+generated shape is in `crates/execution/ab-riscv-macros/src/build/execution_impl/generate_threaded_fns.rs`
+and can be read post-expansion in `$OUT_DIR/{EnumName}_execution_impl.rs`.
 
 ## 0. The shape of the proposal in one paragraph
 
 Keep `ExecutableInstruction::execute()` and its `match` emitter exactly as they are. Add a **second
 emitter** that produces one handler function per variant plus a dispatch table, reached through one
-new method on `ExecutableInstruction`. Both emitters run by default, and the two paths coexist:
+new method — on a new `ThreadedExecutableInstruction` trait rather than on `ExecutableInstruction`,
+for the reason in §3.4. Both emitters run by default, and the two paths coexist:
 `match` where code size matters, handlers where throughput does.
 
 Instruction bodies do not change — not one of the ~500 arms is rewritten. **Since `fb1eaaa` on
@@ -33,6 +42,18 @@ Measured on the CoreMark prototype, 147 variants, `zerostore`, x86-64:
 | cycles per guest instruction (Zen 4) | 11.34 | 6.14 |
 | cost of an extension you never execute | +11% (89→147 arms) | none measured |
 | toolchain | stable | needs `explicit_tail_calls` |
+
+> **Correction.** The size and speed numbers in this table are the CoreMark prototype's and were
+> never reproduced against the generated implementation — Phase 3 did not run. What was confirmed is
+> the shape: in a release build of the interpreter's test binary every generated handler ends in an
+> indirect `jmp` through a jump table (`jmp *(%rax,%r11,8)`) and contains no `call` at all, so
+> `become` does emit real tail calls at the real variant count. Treat the ratios as the prototype's
+> until `bench-dispatch.sh` says otherwise.
+
+> **Correction on layout control.** "No `#[inline(always)]` on handler bodies" held: the generated
+> handlers carry no inline attribute. `execute_threaded()` and the private `dispatch_*` function do
+> carry `#[inline(always)]`, which is a different thing — neither is a link in the tail-call chain
+> (see §4).
 
 So handlers are **1.9x the code for 1.85x the speed**. That is a real trade, not a free win, and it
 is why the `match` path stays: contract execution and anything size-sensitive should be able to keep
@@ -59,10 +80,17 @@ The short answer is: all of it.
 | `ExecutionResult` | **reuse, and this is load-bearing** | it is what lets arms stay untouched — see §4 |
 | `RegisterFile` | **reuse unchanged** | proven generic in the prototype at no cost |
 | `VirtualMemory` | **reuse unchanged** | same; bounds checks stay, they are a correctness requirement |
-| `ExecutableInstructionOperands` | **not used by handlers** | each handler names its own operands; that is the entire point of §2 of the handoff. Keep it for the `match` path |
+| `ExecutableInstructionOperands` | **used by handlers after all** | see the correction below |
 | `ExecutableInstruction` | **keep, untouched** | the compact path |
-| `InstructionFetcher` / `ProgramCounter` | **reuse, with a layout constraint** | see §3.1 |
+| `InstructionFetcher` / `ProgramCounter` | **reuse, unchanged** | see §3.1 |
 
+> **Correction.** `ExecutableInstructionOperands` *is* used by handlers. Each handler opens with the
+> whole-enum `instruction.get_rs1_rs2_operands()` and reads both source registers, exactly as the
+> `match` loop does. That is not a regression to the shared preamble: the `let … else` destructure
+> that follows it ends in `unreachable_unchecked()`, so the whole-enum match folds to the one
+> variant's arm and dead-code elimination removes whichever reads the instruction does not use.
+> Verified on release disassembly — the `Lui`, `Auipc`, `Jal`, `Fence`, `Ecall`, `Ebreak` and
+> `Unimp` handlers contain no register-file read at all, while `Add` contains two.
 The `&mut self` on `ProgramCounter`'s methods is not an obstacle, despite by-value having measured
 1.66x faster. That measurement is about passing the program counter **as an argument** behind a
 reference, which is a different thing: a handler takes the fetcher by value and calls `&mut self`
@@ -74,6 +102,14 @@ registers. §3.1 is the layout constraint that makes it true.
 One method on `ExecutableInstruction` and one result type. No new traits at all.
 
 ### 3.1 The fetcher travels by value, and needs indirection to do it
+
+> **Correction.** The by-value threading landed; the fetcher redesign did not. No `EagerFetcher`, no
+> descriptor-plus-offset split, no 16-byte budget work — the existing `InstructionFetcher`
+> implementations travel through the chain unchanged, whatever their size. This section is still the
+> right thing to do and is now independent of the dispatch change: it can be done later without
+> touching the emitter, and until it is, a large fetcher costs argument registers across the chain.
+> The split between the reading half of the program counter (arms) and `set_pc`/`set_pc_relative`
+> (the executor, here the handler epilogue) is honored as written.
 
 The fetcher already holds the program counter, so thread the whole fetcher through the chain by
 value rather than splitting out a position.
@@ -118,15 +154,26 @@ directly — the hidden out-pointer already gives it somewhere to write, so noth
 threaded through the chain to carry a trap out.
 
 ```rust
-pub struct ThreadedExecutionResult<I, CustomError = CustomErrorPlaceholder>
+pub struct ThreadedExecutionResult<IF, I, CustomError = CustomErrorPlaceholder>
 where
     I: Instruction,
 {
-    /// Where execution stopped, so a caller can resume or report
-    pub program_counter: Address<I>,
+    /// Instruction fetcher as of the moment execution stopped
+    pub instruction_fetcher: IF,
+    /// Why execution stopped
     pub outcome: Result<(), ExecutionError<Address<I>, CustomError>>,
 }
 ```
+
+> **Correction.** It carries the **fetcher** back, not an address. The fetcher was moved into the
+> chain by value, so something has to give it back or the caller loses it — `execute()` leaves the
+> caller's fetcher in place and `execute_threaded()` has to end up equivalent. An address would not
+> be enough to resume from. That adds a generic parameter (`IF`, first) and makes the struct larger
+> than 16 bytes for any real fetcher, which the rest of this section already argued is the right
+> trade: one out-pointer held across the chain, no per-instruction stores.
+>
+> `stopped()` and `failed()` constructors were added alongside it, the latter calling `cold_path()`,
+> since every handler has four early-return sites that use them.
 
 This does **not** need to be ≤16 bytes. It is returned once, from the outermost call; every handler
 in between tail-calls and never writes to it. Being over 16 bytes means it returns through a hidden
@@ -163,11 +210,48 @@ they need instead of a pointer whether or not there is anything behind it.
 Neither needs to be `Copy`: a `&mut` moves into the handler and moves again into the tail call,
 which is what threading means here.
 
+> **Correction, and the one thing this forced elsewhere.** Owned `ExtState` and `InstructionHandler`
+> landed as designed. What the plan did not anticipate is that a caller holding real state — such as
+> `BasicInterpreterState`, which owns both — then has to pass `&mut` *as* the owned value, which
+> only works if `&mut T` implements the same traits `T` does. So blanket forwarding implementations
+> were added: `const impl … Csrs for &mut T` and `const impl … SystemInstructionHandler for &mut T`
+> in `lib.rs`.
+>
+> `VectorRegisters` could not be forwarded that way. Its `read_vregs()` returns
+> `&VectorRegisterFile<{ Self::VLEN }>`, and the compiler does not normalize
+> `<&mut T as VectorRegisters>::VLEN` to `T::VLEN` while `Self` is generic — an associated const in
+> const-argument position does not see through a generic impl. Enumerating the permutations does not
+> help either: `Self = &mut T` stays generic, so it still fails to normalize, and multiple impls
+> collide with E0119. The fallback is `impl_vector_registers_for_mut_ref!`, a macro that writes the
+> forwarding impl for a concrete extension state type, mirroring the `impl_vector_registers!` hack
+> the act4 runner already needed for the same reason. Filed upstream as
+> [rust-lang/rust#161264](https://github.com/rust-lang/rust/issues/161264); both macros carry a TODO
+> pointing at it.
+>
+> An earlier attempt at a wrapper type in `basic` holding a `&mut` was written and then deleted once
+> the blanket implementations were shown to work. There is no `BorrowedState`.
+
 ### 3.4 The trait method
 
-No new trait and no new generic parameter.
+> **Correction — this is the largest divergence in the plan.** It is a **new trait**,
+> `ThreadedExecutableInstruction`, not a method on `ExecutableInstruction`. The reason is hard:
+> `ExecutableInstruction` is a `const trait`, and **calls through a function pointer are not allowed
+> in `const fn`**. Dispatch is a table of function pointers, so `execute_threaded()` can never be
+> `const`, and a trait cannot currently mix `const` and non-`const` methods.
+>
+> The new trait has the same generic parameters in the same order, requires
+> `Self: ExecutableInstruction<…>` and `PC: InstructionFetcher<Self, Memory, CustomError>`, and
+> declares exactly one method with the signature below (returning
+> `ThreadedExecutionResult<PC, Self, CustomError>` per §3.2). Its generated `impl` relaxes the
+> enum's `[const]` bounds to ordinary ones, since nothing about it is `const`. Its doc comment says
+> so and says the method should move into `ExecutableInstruction` if mixing ever becomes possible.
+>
+> The rest of this section stands: no second generic parameter, the `where` bound supplies the
+> fetching half, and the argument stays `instruction_fetcher` while the type parameter stays `PC`.
+
+No new generic parameter.
 `ExecutableInstruction<Regs, ExtState, Memory, PC, InstructionHandler, CustomError>` already carries
-everything this needs, so it gains one generated method:
+everything this needs, so a parallel trait declares one method:
 
 ```rust
 fn execute_threaded(
@@ -187,8 +271,19 @@ smaller role; `execute_threaded` needs the fetching half too, and a `where` boun
 so. That leaves the argument named `instruction_fetcher` while the type parameter is called `PC`,
 which is mildly inconsistent and much less trouble than a parallel generic would be.
 
-**This is the entire public surface.** No `handler()`, no `HANDLERS`, no exposed table. Everything
-— the handler functions, the dispatch — is private inside the generated body:
+**This is the entire public surface.** No `handler()`, no `HANDLERS`, no exposed table.
+
+> **Correction on where the generated items live.** They are not nested inside `execute_threaded()`.
+> Nested items cannot be referred to from a sibling item, and the handlers have to name each other
+> (every handler reaches dispatch, and dispatch names all of them), so they are emitted as
+> private free items in the generated file alongside the per-variant execution functions: one
+> `execute_{enum}_{variant}_threaded` per variant, one `dispatch_{enum_snake}`, and one private
+> `{Enum}ThreadedDispatchResult` enum. None of them is exported; the trait method is still the whole
+> surface. The sketch's point about nested items not inheriting the enclosing generics applies
+> unchanged — every generated item repeats the full generic parameter list and every call site uses
+> an explicit turbofish.
+
+The sketch as proposed:
 
 ```rust
 fn execute_threaded(..) -> ThreadedExecutionResult<..> {
@@ -219,6 +314,12 @@ A `match` rather than a table constant for a second reason too: a `const` item i
 cannot reference that function's generics, while a `match` arm can. Whether LLVM really produces the
 lookup table at ~500 arms is worth verifying, and an associated constant on a `PhantomData` carrier
 is the fallback if it does not.
+
+> **Correction — verified, and it does.** At the real variant count the dispatch `match` lowers to a
+> jump table: the tail call in every generated handler is a single `jmp *(%rax,%r11,8)` against a
+> table of handler addresses. The `PhantomData` fallback is not needed. The match arms are
+> `Enum::Variant { .. } => handler::<…>`, generated exhaustively with no catch-all, so a new
+> extension is a compile error rather than a silent gap, as intended.
 
 Keeping the surface this small is also what makes §7's ABI question survivable: if handlers ever
 need an exotic calling convention, `execute_threaded` is the only thing that has to keep its
@@ -273,7 +374,37 @@ well, which a `where PC: InstructionFetcher<..>` bound on the method supplies wi
 generic parameter — see §3.4.
 
 So the handler no longer embeds the arm. It destructures the instruction, calls the generated
-function, applies the `ExecutionResult` it returns, and tail-calls:
+function, applies the `ExecutionResult` it returns, and tail-calls.
+
+> **Correction — the handler does not fetch, and dispatch is not a link in the chain.** The sketch
+> below has each handler fetch its own next instruction and `become dispatch(…)`, with `dispatch`
+> doing `become handler(…)`. That cannot be built: **`become` requires the caller's and the callee's
+> signatures to match exactly**, and a handler necessarily takes the instruction it is about to
+> execute while dispatch necessarily does not. Written that way it produces thousands of mismatched-
+> signature errors.
+>
+> What was built instead splits the two roles:
+>
+> * **The instruction is an argument.** A handler's first parameter is the already-decoded
+>   instruction; it never fetches for itself. Its signature is
+>   `fn(I, PC, &mut Regs, ExtState, &mut Memory, InstructionHandler) -> ThreadedExecutionResult<…>`,
+>   and every handler has exactly that signature, which is what makes `become` legal between any
+>   two of them.
+> * **`dispatch_{enum}` is `#[inline(always)]` and returns.** It fetches, selects, and hands back
+>   both halves through a private `{Enum}ThreadedDispatchResult<I, Handler, CustomError>` —
+>   `Next { instruction, handler }`, `Break`, or `Err(…)`. The caller then does the `become` itself.
+>   Being inlined and non-escaping, that enum never materializes; it is `FetchInstructionResult`
+>   with the handler attached and the `Continue` variant resolved away.
+> * **`FetchInstructionResult::Continue` is a loop inside dispatch**, not a re-entry into the chain,
+>   which is what lets dispatch return a value rather than being a tail call.
+> * **`execute_threaded()` is the one ordinary call in the whole chain.** It runs dispatch once and
+>   calls the first handler normally; from there nothing returns until execution stops.
+>
+> The rest of the sketch is accurate: the `let … else` with `unreachable_unchecked()`, the
+> `&mut instruction_fetcher` handed to the arm, the `ExecutionResult` applied in the epilogue, and
+> the moves of the fetcher, extension state and system handler into the tail call.
+
+The sketch as proposed:
 
 ```rust
 // Private inside `execute_threaded`, generated once per variant
@@ -368,6 +499,12 @@ change: the arm
 sees the same `&mut` it sees today, the reference never escapes the handler, and the fetcher itself
 travelled here in registers. The `match` loop and a handler present arms with identical interfaces.
 
+> **Correction.** No separate `let` binding is generated. The reborrows are written directly at the
+> call site (`&mut ext_state`, `&mut instruction_fetcher`, `&mut system_instruction_handler`) and
+> binding the returned `ExecutionResult` to a local ends them before the epilogue reads the fetcher
+> again. The property this paragraph describes is unchanged — the references never escape and the
+> values stay in registers.
+
 Note also that `instruction_fetcher`, `ext_state` and `system_instruction_handler` are moved into
 the tail call rather than reborrowed. That is what threading owned values means, and it is why none
 of them needs to be `Copy`.
@@ -383,7 +520,9 @@ AVX-512 with the enum in the middle. That was a model with its own enum and a pl
 register file, so it shows the shape does not block the optimiser rather than proving the emitter's
 own output will fold.
 
-**One `become` per handler, at the end — never one inside each match arm.** This is a hard
+**One `become` per handler, at the end — never one inside each match arm.** (Honored: every
+generated handler has exactly one `become`, after the `ExecutionResult` epilogue and the dispatch
+step, with the four stopping paths taking early returns.) This is a hard
 requirement on the emitter, and it is the one place the fold was observed to break. When the tail
 dispatch is duplicated into every arm, a handler whose arm always yields the same variant is still
 fine, because the optimiser deletes the unreachable arms and one `become` survives. But `beq`, whose
@@ -397,7 +536,12 @@ this shape deliberately.
 Three consequences worth stating plainly:
 
 - **~500 instruction bodies stay exactly as written.** One source of truth, and the `match` emitter
-  and the handler emitter consume the same input. Instruction authors notice nothing.
+  and the handler emitter consume the same input. Instruction authors notice nothing. **This held.**
+  Not one instruction body was touched. The only macro-side consequence is that `execute()`'s
+  processed signature is now normalized before anything is derived from it — a leading `_` is
+  stripped off arguments and wildcard-discarded destructured fields are bound by name — so every
+  generated function takes the same argument names whether or not the implementation it came from
+  had a use for them. Implementations still write `_memory` and `rs1_value: _` and are unaffected.
 - **`ExecutionResult` must fold away.** It is a local enum that never escapes, so LLVM should
   scalarise it and leave no materialised value — the same argument that makes the prototype's `Env`
   struct free. If it does *not* fold, every instruction pays a tax and the plan needs rework. This
@@ -424,6 +568,15 @@ let result = CoremarkInstruction::execute_threaded(
 `BasicInterpreterState` keeps `execute()` and gains a parallel method that unpacks its fields into
 that call, so a caller picks a path by which method it calls and nothing else changes.
 
+> **Correction, minor.** Both held, with the entry point on the new trait rather than on
+> `ExecutableInstruction` (§3.4). `BasicInterpreterState::execute_threaded()` exists and mirrors
+> `execute()`'s `replace_with_or_abort_and_return` shape, taking the fetcher out and putting the
+> returned one back. Because that state owns its extension state and system instruction handler, it
+> passes `&mut` to each and so is bounded on
+> `for<'a> ThreadedExecutableInstruction<Regs, &'a mut ExtState, …, &'a mut InstructionHandler>`. A
+> caller whose two are zero-sized should call `I::execute_threaded()` directly and save the two
+> argument registers; the method's doc says so.
+
 ## 6. When handlers are generated
 
 Handlers are generated **by default**, not opted into, and generation belongs to the
@@ -443,6 +596,18 @@ The one thing to confirm early is that this really holds for the `HANDLERS` cons
 is never read should not be emitted, but a table of function pointers is exactly the shape that can
 accidentally keep every handler alive if something forces it. Check with `nm` on a binary that uses
 only the `match` path; it belongs with the other Phase 0 spikes.
+
+> **Correction.** Default-on generation landed as described, in the instruction-execution macro. The
+> `HANDLERS` constant does not exist — there is no table constant to keep anything alive, only a
+> `match` inside an `#[inline(always)]` dispatch function (§3.4), so a crate that never calls
+> `execute_threaded()` never monomorphizes a handler and the question does not arise in the form it
+> is posed here. Not separately checked with `nm` on a `match`-only binary.
+>
+> One thing this section did not anticipate: `explicit_tail_calls` is a crate-level feature, so
+> every crate that *instantiates* the generated code has to enable it, not just the crate that
+> generates it. `ab-contract-file`, `ab-riscv-act4-runner` and `ab-riscv-coremark-runner` each
+> gained `#![feature(explicit_tail_calls)]` and the matching `expect(incomplete_features)` for that
+> reason alone, without using the threaded path.
 
 ## 7. Risks, in the order they should be retired
 
@@ -469,6 +634,26 @@ Three things are taken as given rather than listed: `become` works through a gen
 an unused table in a `match`-only crate costs compile time and nothing else, and `ExecutionResult`
 stays ≤16 bytes with `ContinueNoWrite` in it.
 
+> **Correction — where the four risks actually stand.** None of these was retired as a Phase 0 spike;
+> they were resolved, or not, by building the thing.
+>
+> 1. **Fetcher in 16 bytes.** Not addressed — §3.1 was not implemented, so this is still open and
+>    still worth doing.
+> 2. **Dense `match` → lookup table.** **Retired.** It does, at the real variant count; see §3.4.
+> 3. **`ThreadedExecutionResult` ≤16 bytes / vector return.** **Moot.** The type carries the fetcher
+>    back (§3.2), so it is over 16 bytes by construction and returns through a hidden out-pointer.
+>    §9's SIMD return was never needed and was not tried.
+> 4. **~500 variants.** **Builds and passes.** The interpreter's 1708 tests pass on both paths, and
+>    dedicated tests assert the two paths agree instruction-for-instruction on registers, memory,
+>    program counter and error. Compile time and text size at that scale were not measured.
+>
+> Of the three things "taken as given": `become` through a generated trait method works, and
+> `ExecutionResult` folding away is confirmed by the handler disassembly. The unused-table question
+> is answered in §6 — there is no table.
+>
+> **One risk this section missed.** `become` requires an exact signature match between caller and
+> callee. That constraint, not any of the four above, is what reshaped §4's dispatch.
+
 ## 8. Sequencing
 
 - **Phase 0** — the four risks above. Stop and re-plan if 1 or 2 fails.
@@ -483,7 +668,44 @@ stays ≤16 bytes with `ContinueNoWrite` in it.
 - **Phase 4** — the vector composition. The proof.
 - **Phase 5** — PGO, measured separately, since it is independent of everything above.
 
+> **Correction — what was actually done.**
+>
+> * **Phase 0 — skipped.** The risks were resolved by building rather than by spikes; §7 records
+>   where each landed.
+> * **Phase 1 — done, but not as a hand-written prototype.** `ThreadedExecutionResult` and
+>   `ThreadedExecutableInstruction` are in `lib.rs`. The intermediate step of hand-writing one
+>   `execute_threaded()` was skipped and the emitter written directly, which is why the `become`
+>   signature-match constraint (§4) surfaced as a wall of compiler errors rather than as a finding.
+>   That was the wrong order.
+> * **Phase 2 — done.** `generate_threaded_fns.rs` in `ab-riscv-macros`, in the
+>   instruction-execution macro, generating alongside `execute()`. `#[instruction_execution]`'s
+>   documentation in `ab-riscv-macros-impl/src/lib.rs` gained a paragraph describing it.
+> * **Phase 3 — not done.** No runner or benchmark calls the threaded path; the runners were touched
+>   only to enable `explicit_tail_calls` (§6). **No performance number in this document has been
+>   reproduced against the generated implementation.** The correctness half is covered by the
+>   interpreter's own tests, including `rv64/threaded_tests.rs`, which runs the same programs
+>   through both paths and asserts they agree — arithmetic, memory, taken and untaken branches,
+>   jumps, failures, and a 1000-iteration loop that would blow any stack if the chain were not real
+>   tail calls.
+> * **Phase 4 — partial.** The vector enums generate handlers and their tests pass, so the
+>   composition builds; it has not been benchmarked, which is the part that was meant to be the
+>   proof.
+> * **Phase 5 — not started.**
+>
+> The gate used throughout implementation instead of a benchmark was release-disassembly comparison:
+> every cleanup round was checked function-by-function against the previous build and required to
+> come out byte-identical.
+
 ## 9. ABI ideas, evaluated
+
+> **Correction.** None of this section was needed. §3.2's result type carries the fetcher back and
+> is over 16 bytes by construction, so it returns through a hidden out-pointer — option 3 of the
+> three below, which this section already expected to be the common answer. The 16-byte squeeze and
+> the `__m256i` return were not attempted, and `become`'s exact-ABI-match requirement was never
+> re-confirmed with a vector return type. `extern "rust-preserve-none"` was reconsidered once and
+> rejected for the same reason recorded here: it cannot be combined with the `zerostore` and
+> `extern "Rust"` requirements this project already has, on top of being an unstable feature that
+> measured as a tie.
 
 **Returning in vector registers to get past 16 bytes.** Works, but only in one specific shape, and
 not the obvious one.
@@ -567,10 +789,46 @@ if Windows ever matters. `extern "tail"` says nothing about that: a tail-call co
 from the platform's own is still the platform's register allocation. Pinning remains the answer, and
 whether `become` accepts an explicitly pinned ABI is an unverified detail to check at that point.
 
+> **Correction — `become` does accept a pinned ABI, and the pinning is written but not yet merged.**
+> Windows x86-64 is in this project's CI, so it was not a hypothetical. Handlers and the function
+> pointers dispatch selects between are generated as `extern "sysv64"` there and left on the default
+> convention everywhere else. That change is on `claude/risc-v-dispatch-phases-b3o71k` and is not
+> part of #766.
+>
+> Verified that `become` accepts it, by pinning to `extern "win64"` on Linux x86-64 — a genuinely
+> non-default convention there, so a real test rather than a no-op: it compiles, works through
+> generics and non-FFI-safe types, and dispatch still lowers to `jmp *(%r10,%rax,8)`. Then verified
+> against the real emitter by forcing the branch on for Linux: the whole interpreter builds
+> warning-clean, all tests pass, and every handler still contains zero `call` and ends in the
+> indirect `jmp`.
+>
+> **The decision is made in the build script, and that is the only place it can be made correctly.**
+> `CARGO_CFG_TARGET_ARCH` and `CARGO_CFG_TARGET_OS` describe the target being compiled for, and
+> `OUT_DIR` is per-target so nothing goes stale. A proc macro could not do this: proc macros run on
+> the **host**, so a `cfg!()` inside one describes the wrong machine under cross-compilation, and
+> the only sound proc-macro alternative is emitting every handler twice behind `#[cfg]`. A
+> `macro_rules!` wrapper would work but has to expand whole items — the ABI is part of an item's
+> syntax, not an attribute — and would have to be `#[macro_export]`ed, putting an implementation
+> detail of generated code into the crate's public API.
+>
+> Two costs worth knowing. First, pinning makes the handlers `extern` in the eyes of
+> `improper_ctypes_definitions`, which objects to the instruction enum, the result type and the
+> generic parameters; the generated items carry an `expect` for it, emitted only where the ABI is,
+> and it is sound because every caller and callee is generated into the same crate. Second, an
+> explicitly pinned ABI is **not free even where it coincides with the platform default** — forcing
+> `sysv64` on Linux, where it is already the convention, moved 154 instructions across the binary,
+> because `extern "Rust"` carries parameter optimization attributes an explicit ABI does not. On
+> Windows that is against a baseline of four argument registers instead of six, so it should still
+> be a clear win, but it is a trade rather than free, and it is unmeasured — Phase 3 has not run on
+> any platform.
+
 `extern "rust-preserve-none"` remains the real answer if the signature ever outgrows six registers —
 twelve argument registers, measured, already understood.
 
 ## 10. Deliberately not in this plan
+
+> **Correction.** Everything in this section stayed out, and nothing in it was revisited during
+> implementation.
 
 - **`#[loop_match]` / `#[const_continue]`** (rust-lang/rust#132306, RFC 3720) as a way to keep the
   loop and get handler-like codegen. It does not work for this, for a specific reason:
@@ -603,3 +861,36 @@ twelve argument registers, measured, already understood.
 - **A 33-slot register file with decode-time `x0` remapping.** The single largest identified win —
   store-forwarding failures are a quarter to a third of runtime — but it changes the shared register
   types, so it is a separate decision from this one. Recorded in the handoff.
+
+## 11. Things that came up during implementation and are not anywhere above
+
+- **The generated code has to be warning-clean, and that is a real design constraint.** Suppressing
+  lints wholesale over generated code would hide problems in the instruction implementations that
+  get inlined into it, so every suppression is placed at the narrowest site that needs it:
+  `undocumented_unsafe_blocks` on the `let … else`, `rest_pattern_accessible_field` on dispatch's
+  handler-selecting `match`, and `type_complexity` on the dispatch function's return type — the last
+  because `become` needs an exact signature match and a type alias cannot capture the enclosing
+  generics, so the handler function-pointer type has to be spelled out.
+
+- **The two emitters share what can be shared and no more.** `generate_threaded_fns` reuses
+  `variant_fn_name()` from `generate_variant_fns` so the handlers call functions by the same names
+  they are generated under, and takes the field names it passes from the match arm's own pattern.
+  It does not look up field types, does not re-derive the shared argument list, and does not see
+  `execute()`'s signature at all.
+
+- **`execute()` is never an ABI boundary in an optimized build.** The interpreter's release test
+  binary contains 54 threaded handler symbols (only the variants its tests actually reach get
+  monomorphized) and zero `ExecutableInstruction::execute` or per-variant execution function
+  symbols — all of the latter are inlined away. This matters for reading disassembly: there
+  is nothing to compare a handler against, only the handler itself.
+
+- **A `#[cfg_attr(feature = "no-panic", …)]` on `execute()` is moved to the per-variant execution
+  functions, and the threaded handlers do not carry it.** They wrap those functions rather than
+  containing the logic, so the check still applies where the logic is.
+
+- **Where to look.** Emitter:
+  `crates/execution/ab-riscv-macros/src/build/execution_impl/generate_threaded_fns.rs`. Signature
+  normalization and the call into the emitter: `…/build/execution_impl.rs`. Types and trait:
+  `crates/execution/ab-riscv-interpreter/src/lib.rs`. Entry point for the basic interpreter:
+  `…/src/basic.rs`. Cross-path tests: `…/src/rv64/threaded_tests.rs`. Generated output for any enum:
+  `$OUT_DIR/{EnumName}_execution_impl.rs`.

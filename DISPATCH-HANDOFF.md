@@ -5,21 +5,27 @@ functions. Everything stated as a measurement was measured; everything else is f
 
 ## 0. Start here
 
-**State:** the exploration is finished and the design is settled. Nothing has been implemented in
-`ab-riscv-macros` yet, and doing so is the next piece of work.
+**State:** the exploration is finished, the design is settled, and **the emitter has since been
+built and merged** into `main` in
+[#766](https://github.com/nazar-pc/abundance-wip/pull/766). What is left is the part that is
+measurement rather than implementation — see §7.
 
-**Two documents.** This one is the record of what was measured and why the design is what it is.
-`DISPATCH-PLAN.md` is the implementation plan, reviewed but **not yet approved** — do not start
-building from it without asking.
+**Two documents.** This one is the record of what was measured and why the design is what it is, and
+it is unchanged apart from the status paragraphs here and in §7 and one note in §4 marking a
+question the implementation has since answered. `DISPATCH-PLAN.md` is the
+implementation plan, now **corrected in place** against what was actually built: each place the
+implementation diverged carries a block quote saying so next to the reasoning it replaced. Read it
+for the design; read its corrections for what the design became.
 
 Read this one first for §2 (why the `match` is slow), §3 (what won and by how much) and §6 (why only
 one machine's numbers count); then read the plan.
 
-**Everything is on branch `claude/risc-v-dispatch-perf-6qtcdo`**, which is a scratchpad and is not
-meant to be merged. The working prototype is
-`crates/execution/ab-riscv-coremark-runner/src/threaded.rs`. The branch is rebased on `main` at
-`068806d`, which matters because `fb1eaaa` in it already extracts per-variant execution functions —
-see the end of §1, and §4 of the plan, which is built on them.
+**The exploration lives on branch `claude/risc-v-dispatch-perf-6qtcdo`**, which is a scratchpad and
+is not meant to be merged; the shipped emitter is on `main`. The working prototype, which is still
+the reference for what the numbers below mean, is
+`crates/execution/ab-riscv-coremark-runner/src/threaded.rs`. The branch is rebased on `main` after
+#766, so `main` now carries both the per-variant execution functions from `fb1eaaa` (see the end of
+§1) and the handler emitter built on them.
 
 **To reproduce anything here**, you need `gcc-riscv64-unknown-elf` installed and then:
 
@@ -363,7 +369,10 @@ Practical notes for whoever does it:
   forwarded down the tail chain, so it is a one-time cost rather than per-instruction traffic, but
   it also means a store in every handler and a load in the loop.
 - The default Rust ABI on **Windows x86-64 gives only 4** argument registers. If Windows ever
-  matters, handlers need pinning to `extern "sysv64"`.
+  matters, handlers need pinning to `extern "sysv64"`. **It does** — Windows x86-64 is in this
+  project's CI — and the generated handlers are pinned there and left alone everywhere else. See the
+  correction in §9 of the plan, which also records that `become` accepts an explicitly pinned ABI
+  and that pinning is not free even where it matches the platform default.
 
 ### `extern "rust-preserve-none"`
 
@@ -673,12 +682,20 @@ longer what limits the loop: it costs 6.14 cycles per guest instruction against 
 11.34, with caches, branch prediction and issue width all ruled out, and what remains is a
 store-forwarding problem in the register file rather than anything about how handlers are reached.
 
-**The next piece of work is implementation, not measurement**: the emitter in `ab-riscv-macros` that
-turns the per-variant arms it already extracts into standalone handler functions (§3). The
-prototype is the reference for what it should produce, and **`DISPATCH-PLAN.md` is the design for
-it** — reviewed across several rounds but not yet approved to build. The case worth proving while
-building it is the ~500-variant vector composition, question 5 below, because that is where the
-existing regression lives and where the `match` back end is known to degrade while handlers do not.
+**The implementation is done; what is left is measurement.** The emitter in `ab-riscv-macros` that
+turns the per-variant arms into standalone handler functions (§3) is on `main`, and
+`DISPATCH-PLAN.md` records both the design and where the build diverged from it. What did *not*
+happen is Phase 3 of that plan: **nothing in either document has been reproduced against the
+generated implementation.** No runner or benchmark calls the threaded path yet, so every number here
+is still the prototype's. Wiring `bench-dispatch.sh` to the generated path and seeing whether it
+reproduces 6.14 cycles per guest instruction is the next piece of work, and the case worth proving
+with it is the ~500-variant vector composition, question 5 below, because that is where the existing
+regression lives and where the `match` back end is known to degrade while handlers do not.
+
+What the implementation did establish, without benchmarks: every generated handler contains no
+`call` and ends in an indirect `jmp` through a jump table, so `become` produces real tail calls at
+the real variant count; and the two paths agree instruction-for-instruction on registers, memory,
+program counter and error, which the interpreter's tests assert directly.
 
 What is *not* next, and why, is worth stating so it does not get relitigated: superinstructions
 (question 5's data kills them), inline handler pointers (question 3), and `extern "rust-preserve-none"`

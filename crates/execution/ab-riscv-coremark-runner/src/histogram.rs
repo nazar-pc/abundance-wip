@@ -90,6 +90,11 @@ pub(crate) fn histogram<const BASE: u64, const SIZE: usize>(
                 previous = (discriminant < PAIRS).then_some(discriminant);
                 continue;
             }
+            ExecutionResult::ContinueNoWrite => {
+                // Fell through, so the next instruction is this one's stream neighbour
+                previous = (discriminant < PAIRS).then_some(discriminant);
+                continue;
+            }
             ExecutionResult::Branch { offset } => {
                 previous = None;
                 instruction_fetcher.set_pc_relative(memory, instruction.size(), offset)
