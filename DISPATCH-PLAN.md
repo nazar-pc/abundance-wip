@@ -550,11 +550,46 @@ meant to serve is better served by §3.3's owned `ExtState` and `InstructionHand
 gets the common
 case to five registers of six.
 
+**`extern "tail"`** (rust-lang/rust#157427). Part of the same tail-calls experiment as
+`explicit_tail_calls`, described as "a calling convention supposed to be efficient for tail calls",
+implemented on top of LLVM's `tailcc`. **Not needed for this design, and not a substitute for
+anything in it.** `become` already produces real tail calls with `extern "Rust"` — verified in the
+prototype, which contains no `call` in any handler and an indirect `jmp` in every one — so there is
+no gap for it to fill. What it might offer is a *different register convention*, which is the same
+axis as `extern "rust-preserve-none"`, and that measured as a tie on Zen 4. Worth re-testing only if
+the signature outgrows six registers. It is also not implemented yet (the implementation PR is still
+open), and LLVM supports `tailcc` on x86-64 and aarch64 only — enough for this project, but not
+something to depend on.
+
+**It does not solve the Windows problem.** The notes record that Windows x86-64 gives only four
+argument registers under the default Rust ABI, so handlers would need pinning to `extern "sysv64"`
+if Windows ever matters. `extern "tail"` says nothing about that: a tail-call convention derived
+from the platform's own is still the platform's register allocation. Pinning remains the answer, and
+whether `become` accepts an explicitly pinned ABI is an unverified detail to check at that point.
+
 `extern "rust-preserve-none"` remains the real answer if the signature ever outgrows six registers —
 twelve argument registers, measured, already understood.
 
 ## 10. Deliberately not in this plan
 
+- **`#[loop_match]` / `#[const_continue]`** (rust-lang/rust#132306, RFC 3720) as a way to keep the
+  loop and get handler-like codegen. It does not work for this, for a specific reason:
+  `const_continue` requires the target arm to be **statically known** — the RFC restricts it to
+  expressions that are const-promotable, so "runtime values read from memory do not qualify". An
+  interpreter's next state *is* a runtime value read from memory, namely the next instruction's
+  discriminant, so the mechanism the feature is built around never fires here.
+
+  What is left is the `#[loop_match]` structure itself, which gives replicated dispatch — one jump
+  site per arm instead of a shared loop header. That is a real threaded-interpreter technique, and
+  it targets **the one cost this workload measured as small**: indirect mispredicts are 0.0097 per
+  guest instruction on Zen 4, about 3% of runtime. Meanwhile it leaves all three costs §2 of the
+  notes identifies, because they are properties of being one large function and `loop_match` keeps
+  it one large function — the hoisted universal operand preamble, the re-materialised shared frame,
+  and the +11% that 89→147 arms cost on work that never touched the added arms. It also keeps the
+  single enormous body that made PGO unhelpful.
+
+  It is cheap to try on the existing `match` path, which is being kept anyway, and it is
+  self-contained enough to be an independent experiment. It is not an alternative to this plan.
 - **Superinstructions.** 922 distinct adjacent pairs with the most common at 2.13%; no small hot set
   to exploit.
 - **Handler pointers inline in the stream.** Removes a dependent load from a chain the branch
