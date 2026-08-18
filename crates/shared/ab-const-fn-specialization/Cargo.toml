@@ -1,0 +1,17 @@
+[package]
+name = "ab-const-fn-specialization"
+description = "Declarative attribute macro for writing a const fn together with a faster non-const specialization"
+license = "0BSD"
+version = "0.1.0"
+authors = ["Nazar Mokrynskyi <nazar@mokrynskyi.com>"]
+edition = "2024"
+include = [
+    "/src",
+    "/Cargo.toml",
+]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints]
+workspace = true
