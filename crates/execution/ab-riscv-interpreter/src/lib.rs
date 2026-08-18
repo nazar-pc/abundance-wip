@@ -711,7 +711,7 @@ where
 /// Generic instruction fetcher
 pub const trait InstructionFetcher<I, Memory, CustomError = CustomErrorPlaceholder>
 where
-    Self: ProgramCounter<Address<I>, Memory, CustomError>,
+    Self: [const] ProgramCounter<Address<I>, Memory, CustomError>,
     I: Instruction,
 {
     /// Fetch a single instruction at a specified address and advance the program counter on
@@ -1091,7 +1091,7 @@ where
 /// This trait is deliberately not `const`, unlike [`ExecutableInstruction`]: dispatch goes through
 /// a table of function pointers, and calls through a function pointer are not allowed in
 /// `const fn`.
-pub trait ThreadedExecutableInstruction<
+pub const trait ThreadedExecutableInstruction<
     Regs,
     ExtState,
     Memory,
@@ -1100,7 +1100,7 @@ pub trait ThreadedExecutableInstruction<
     CustomError = CustomErrorPlaceholder,
 > where
     Self: ExecutableInstruction<Regs, ExtState, Memory, PC, InstructionHandler, CustomError>,
-    PC: InstructionFetcher<Self, Memory, CustomError>,
+    PC: [const] InstructionFetcher<Self, Memory, CustomError>,
 {
     /// Execute instructions starting at the instruction fetcher's current position and continue
     /// until execution stops or fails.

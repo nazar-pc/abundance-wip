@@ -33,21 +33,41 @@ fn handler_abi() -> anyhow::Result<Option<Abi>> {
 /// `const fn` does not allow), so `[const]` bounds are relaxed to ordinary ones, exactly like they
 /// are for a non-`const` execution implementation, and the fetching half of the program counter is
 /// required on top of what `execute()` needs.
-fn threaded_where_clause(generics: &Generics, self_ty: &Type) -> anyhow::Result<WhereClause> {
+fn threaded_where_clause(
+    generics: &Generics,
+    constness: Option<Token![const]>,
+    self_ty: &Type,
+) -> anyhow::Result<WhereClause> {
     let Some(where_clause) = &generics.where_clause else {
         return Err(anyhow::anyhow!("Missing where clause"));
     };
 
-    let mut predicates = strip_const_where_predicates(where_clause.predicates.clone());
+    let mut predicates = where_clause.predicates.clone();
+    if constness.is_none() {
+        predicates = strip_const_where_predicates(where_clause.predicates.clone());
+    }
+
+    let const_trait = constness.map(|c| quote! { [#c] });
 
     predicates.push(parse_quote! {
-        PC: InstructionFetcher<#self_ty, Memory, CustomError>
+        PC: #const_trait InstructionFetcher<#self_ty, Memory, CustomError>
     });
     // Applying an `ExecutionResult` is the executor's job rather than the instruction's, so the
     // handlers need the register file even for an extension whose own instructions never touch it
     predicates.push(parse_quote! {
-        Regs: RegisterFile<Reg>
+        Regs: #const_trait RegisterFile<Reg>
     });
+    if constness.is_some() {
+        predicates.push(parse_quote! {
+            ExtState: #const_trait ::core::marker::Destruct
+        });
+        predicates.push(parse_quote! {
+            InstructionHandler: #const_trait ::core::marker::Destruct
+        });
+        predicates.push(parse_quote! {
+            CustomError: #const_trait ::core::marker::Destruct
+        });
+    }
 
     Ok(WhereClause {
         where_token: <Token![where]>::default(),
@@ -67,11 +87,12 @@ pub(super) fn generate_threaded_fns(
     enum_name: &Ident,
     self_ty: &Type,
     generics: &Generics,
+    constness: Option<Token![const]>,
     variants: &[Rc<Variant>],
     match_arms: &[Arm],
 ) -> anyhow::Result<Vec<Item>> {
     let generic_params = &generics.params;
-    let where_clause = threaded_where_clause(generics, self_ty)?;
+    let where_clause = threaded_where_clause(generics, constness, self_ty)?;
     let abi = handler_abi()?;
     let dispatch_fn_name = format_ident!("dispatch_{}", enum_name.to_string().to_snake_case());
     let dispatch_result_name = format_ident!("{enum_name}ThreadedDispatchResult");
@@ -124,7 +145,7 @@ pub(super) fn generate_threaded_fns(
                     reason = "Handlers only ever call each other, within this crate"
                 )
             )]
-            #abi fn #handler_fn_name<#generic_params>(
+            #abi #constness fn #handler_fn_name<#generic_params>(
                 instruction: #self_ty,
                 mut instruction_fetcher: PC,
                 regs: &mut Regs,
@@ -265,7 +286,7 @@ pub(super) fn generate_threaded_fns(
             )
         )]
         #[inline(always)]
-        fn #dispatch_fn_name<#generic_params>(
+        #constness fn #dispatch_fn_name<#generic_params>(
             instruction_fetcher: &mut PC,
             memory: &Memory,
         ) -> #dispatch_result_name<
@@ -313,8 +334,10 @@ pub(super) fn generate_threaded_fns(
         }
     });
 
+    let trait_constness = constness.map(|_| quote! { #[cst] });
+
     generated_items.push(parse_quote! {
-        impl<#generic_params> ThreadedExecutableInstruction<
+        #trait_constness impl<#generic_params> ThreadedExecutableInstruction<
             Regs,
             ExtState,
             Memory,

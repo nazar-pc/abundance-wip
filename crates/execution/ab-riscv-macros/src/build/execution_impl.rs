@@ -769,6 +769,7 @@ pub(super) fn process_enum_execution_impl(
         &enum_name,
         &item_impl.self_ty,
         &item_impl.generics,
+        is_const.then(<Token![const]>::default),
         &enum_definition.instructions,
         &match_arms,
     )?;
