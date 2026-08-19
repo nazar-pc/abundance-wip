@@ -6,6 +6,10 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{Error, FnArg, GenericParam, Generics, ItemFn, parse_macro_input};
 
+/// Matches the number of `__const_fn_specialization_dispatchN` helpers defined in
+/// `ab-const-fn-specialization`.
+const MAX_ARITY: usize = 12;
+
 /// See `ab-const-fn-specialization` crate for documentation.
 #[proc_macro_attribute]
 pub fn const_fn_specialization(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -48,6 +52,13 @@ fn expand(mut item_fn: ItemFn) -> syn::Result<TokenStream2> {
     let (impl_generics, _ty_generics, where_clause) = generics.split_for_impl();
     let return_type = item_fn.sig.output.clone();
 
+    if item_fn.sig.inputs.len() > MAX_ARITY {
+        return Err(Error::new_spanned(
+            &item_fn.sig.inputs,
+            format!("`#[const_fn_specialization]` supports at most {MAX_ARITY} parameters"),
+        ));
+    }
+
     let mut dispatch_params = Vec::new();
     let mut arg_names = Vec::new();
     for (index, input) in item_fn.sig.inputs.iter().enumerate() {
@@ -60,6 +71,7 @@ fn expand(mut item_fn: ItemFn) -> syn::Result<TokenStream2> {
         dispatch_params.push(quote! { #arg_name: #ty });
         arg_names.push(arg_name);
     }
+    let dispatch_fn_name = format_ident!("__const_fn_specialization_dispatch{}", arg_names.len());
 
     // Lifetime parameters of a `fn` are late-bound and can't be specified via turbofish (that
     // would be a `E0794` error), so only type/const parameters are forwarded here; they are
@@ -91,10 +103,10 @@ fn expand(mut item_fn: ItemFn) -> syn::Result<TokenStream2> {
             // SAFETY: both branches are meant to be semantically equivalent implementations of
             // the same function, one of which happens to be usable in `const` context and the
             // other one isn't; this is a documented, but unenforceable, contract of
-            // `const_eval_select` itself.
+            // `const_eval_select` itself, which `__const_fn_specialization_dispatchN` wraps.
             unsafe {
-                ::core::intrinsics::const_eval_select(
-                    ( #(#arg_names,)* ),
+                ::ab_const_fn_specialization::#dispatch_fn_name(
+                    #(#arg_names,)*
                     #const_impl_path,
                     #rt_impl_path,
                 )
