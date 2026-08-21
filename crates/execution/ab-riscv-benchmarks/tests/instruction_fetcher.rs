@@ -40,7 +40,7 @@ const END_ADDR: u64 = BASE_ADDR + 5 * 4;
 fn new_fetcher(return_trap_address: u64) -> EagerTestInstructionFetcher {
     // SAFETY: Program counter is valid and aligned, the instruction stream ends with a jump
     unsafe {
-        EagerTestInstructionFetcher::new(&code(), return_trap_address, BASE_ADDR, BASE_ADDR + 8)
+        EagerTestInstructionFetcher::decode(&code(), return_trap_address, BASE_ADDR, BASE_ADDR + 8)
     }
 }
 

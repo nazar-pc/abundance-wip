@@ -1,4 +1,5 @@
 #![cfg_attr(target_env = "abundance", no_std)]
+#![feature(const_block_items)]
 
 #[cfg(not(target_env = "abundance"))]
 pub mod host_utils;
