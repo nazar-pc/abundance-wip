@@ -1313,6 +1313,12 @@ where
 /// identical logic and a caller picks between them purely on the trade between code size
 /// (`execute`) and throughput (`execute_threaded`).
 ///
+/// The instruction fetcher is moved through the handler chain by value, so it should not have drop
+/// glue. A fetcher that owns something is dropped by whichever handler ends execution, and every
+/// handler that can fail is a candidate for that, which forces a stack frame, callee-saved register
+/// spills and a reload into the hot path of every load, store, branch and jump. A fetcher that only
+/// borrows what it walks (`Copy`, or at least `!needs_drop`) keeps them all frameless.
+///
 /// This trait is deliberately not `const`, unlike [`ExecutableInstruction`]: dispatch goes through
 /// a table of function pointers, and calls through a function pointer are not allowed in
 /// `const fn`.
