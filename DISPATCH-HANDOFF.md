@@ -191,7 +191,12 @@ This is the thing most worth internalising before reading the numbers: the named
 | `become` | one function per instruction, guaranteed sibling call, never returns |
 | plain tail call | identical body, ordinary call in tail position, *deliberately* not `become` |
 
-The last exists only to answer whether `become` is load-bearing. It is not, today — LLVM performs
+Orthogonal to that is how the handler is *found*, which only becomes a free variable once dispatch
+is per-instruction: *token* threading stores a discriminant in the slot and indexes a table with it,
+*direct* threading stores the handler pointer in the slot itself. See §8 question 3 — direct is
+faster and is measured, but doubles the decoded stream.
+
+The last of the four exists only to answer whether `become` is load-bearing. It is not, today — LLVM performs
 the sibling call anyway at `-O3` — but it is not guaranteed to keep doing so, and `become` turns it
 into a compiler-enforced property. `become` works on x86-64, aarch64 and riscv64, inside
 `#[inline(always)]` helpers, and with generics and HRTB function-pointer tables. It requires exact
@@ -552,7 +557,7 @@ already keeping live.
 
 On `claude/risc-v-dispatch-perf-6qtcdo`, from the workspace root:
 
-Now that one configuration survives, there is one binary with two modes in it, and two scripts:
+Now that one configuration survives, there is one binary with three modes in it, and two scripts:
 
 ```bash
 COREMARK_ITERATIONS=3000 ROUNDS=5 CORE=<core> \
@@ -579,15 +584,15 @@ frames, so self-cost is all there is, which is what is wanted.
 Both find the binary by asking cargo where it put it, so `CARGO_TARGET_DIR`, `build.target-dir` and
 `--target` all work.
 
-Individual runs, if needed — set `COREMARK_DISPATCH` to anything for the threaded back end, leave it
-unset for the generic loop.
+Individual runs, if needed — set `COREMARK_DISPATCH` to anything for the threaded back end, to
+`direct` for the direct-threaded one (§8 question 3), and leave it unset for the generic loop.
 
 There are no dispatch features left — one configuration survived, so there is nothing to select.
 `build-elf-required` is the only relevant feature, and it makes a missing RISC-V toolchain a build
 error rather than an empty ELF and a confusing run-time message.
 
-Environment variables: `COREMARK_DISPATCH` set to any value picks the threaded back end and unset
-picks the generic loop, `COREMARK_ITERATIONS` fixes the amount of work **at build time**
+Environment variables: `COREMARK_DISPATCH` set to any value picks the threaded back end, `direct`
+picks the direct-threaded one and unset picks the generic loop, `COREMARK_ITERATIONS` fixes the amount of work **at build time**
 (**essential** —
 the default of 0 means autodetect, so the workload scales with interpreter speed and results are not
 comparable), `COREMARK_REPEAT` runs the guest N times in-process and reports the best,
@@ -779,9 +784,64 @@ a decision about the shared register types rather than an experiment.
      **This is required and is not a target.** The interpreter runs blockchain consensus, so bounds
      checking is part of the correctness contract, not overhead to be optimised away.
 
-3. ~~**How handlers are reached.**~~ **Dropped**, see question 2: an inline handler pointer removes
-   a dependent load from a chain the branch predictor already hides, and the entire misprediction
-   budget it could recover is 3.5%. It would also double the decoded stream's footprint.
+3. ~~**How handlers are reached.**~~ **Reopened and measured; still not taken.** It was dropped on
+   the reasoning that an inline handler pointer only removes a dependent load the branch predictor
+   already hides, so the whole misprediction budget it could recover is 3.5%. That reasoning was
+   about the wrong thing: what it actually removes is two *instructions* per dispatch, and it is
+   worth more than the misprediction budget.
+
+   `COREMARK_DISPATCH=direct` is now a third mode of the prototype, sharing the `ops!` instruction
+   table with the other two. Xeon B, four interleaved rounds, median: token threading **2160**,
+   direct threading **2256**, **+4.4%**. The same change made through the real emitter, on
+   `claude/risc-v-dispatch-phase-3-tqhzyl`, measured **+5.3%**.
+
+   The dispatch tail is what changes:
+
+   ```
+   token                              direct
+   mov    0x10(%rsi),%rdi             lea    0x20(%rax),%rsi
+   add    $0x10,%rsi                  mov    0x20(%rax),%rdi
+   movzwl %di,%eax                    jmp    *0x28(%rax)
+   lea    table(%rip),%r11
+   jmp    *(%r11,%rax,8)
+   ```
+
+   Note the `leaq` that question 2 below calls "one instruction in nine" and closes as not worth
+   pursuing: direct threading removes it as a side effect, along with the discriminant extraction
+   and the table load. Removing it *alone* is indeed not worth pursuing; it comes free here.
+
+   **The cost is the reason it is not taken.** The slot goes from 8 bytes to 16, and the slot is
+   already 8 bytes for every 2 bytes of guest code, so the decoded program goes from 4x the size of
+   what it interprets to **8x**. For Coremark, whose `.text` is 27,580 bytes, that is 108 KiB
+   today against 215 KiB.
+
+   **And most of the win may not be direct threading at all.** Measured through the real emitter,
+   padding the slot to 16 bytes *with nothing in it* — same token-threaded dispatch, same
+   instructions, purely a wider stride — was worth **+2.2%** on its own, leaving only **+3.0%** for
+   the dispatch change. Doubling the decoded stream did not cost throughput at this size; something
+   about the resulting 32-byte stride per 4-byte guest instruction paid for itself. That is the
+   result worth chasing, and an explicit prefetch is the obvious thing to try, because it costs no
+   memory at all. **Untested.**
+
+   If it is taken later it should be a third mode rather than a replacement, the way threaded
+   dispatch is a mode on top of the `match` loop today, since 8x is a trade a caller should get to
+   refuse.
+
+   Two traps, both of which make a naive direct-threaded build come out *slower* rather than
+   faster, and which cost most of the time spent on this:
+
+   - **`FetchInstructionResult` has a niche.** Its non-instruction variants are encoded in
+     out-of-range values of the instruction's own discriminant, so constructing it from a raw read
+     compiles to a range check against the variant count plus a branch into a twelve-way switch
+     that builds an `ExecutionError`. Today that check is free because the `match instruction`
+     selecting the handler absorbs it into the same jump table. Remove the table and it
+     materialises in every handler.
+   - **The dispatch-result enum has the same niche, for the same reason.** It is free today and is
+     not free once the table is gone; the emitter experiment had to return a plain tuple instead.
+
+   Between them, those two were the difference between 1700 and 2354 iterations/sec. Anyone
+   measuring a direct-threaded variant that comes out slower should look there first. In the
+   prototype neither exists, because it reads the instruction out of the slot directly.
 4. **How `ExecutableInstruction` exposes its handlers.** An associated *slice* — no `COUNT` constant
    is needed. The open part is how that composes across extension traits.
 5. **Superinstructions, and the case against them here.** Fusing an adjacent pair removes one

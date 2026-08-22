@@ -146,8 +146,10 @@ fn run_once() -> anyhow::Result<std::time::Duration> {
         return Ok(std::time::Duration::ZERO);
     }
 
-    if std::env::var("COREMARK_DISPATCH").is_ok() {
-        let host_elapsed = run_threaded_with::<threaded::ZeroStoreRegisters>(&mut state, &setup)?;
+    if let Ok(dispatch) = std::env::var("COREMARK_DISPATCH") {
+        let direct = dispatch == "direct";
+        let host_elapsed =
+            run_threaded_with::<threaded::ZeroStoreRegisters>(&mut state, &setup, direct)?;
 
         let output = read_output(&state.memory, output_buf_addr, output_buf_size)
             .context("Coremark output not found in guest memory")?;
@@ -195,6 +197,7 @@ struct Setup {
 fn run_threaded_with<Regs>(
     state: &mut CoremarkState,
     setup: &Setup,
+    direct: bool,
 ) -> anyhow::Result<std::time::Duration>
 where
     Regs: RegisterFile<Reg<u64>> + Default,
@@ -212,15 +215,29 @@ where
         ..
     } = state;
 
+    // Building the direct-threaded stream is setup rather than execution, but it is inside the
+    // timed region on purpose: it is the cost token threading does not have, and a fair comparison
+    // pays it. It is a single pass over the decoded stream and does not measurably move the score.
     let host_start = std::time::Instant::now();
-    let stop = threaded::run_threaded(
-        instruction_fetcher.instructions(),
-        setup.text_addr,
-        TRAP_ADDRESS,
-        setup.entry_point,
-        &mut regs,
-        memory,
-    );
+    let stop = if direct {
+        threaded::run_direct_threaded(
+            instruction_fetcher.instructions(),
+            setup.text_addr,
+            TRAP_ADDRESS,
+            setup.entry_point,
+            &mut regs,
+            memory,
+        )
+    } else {
+        threaded::run_threaded(
+            instruction_fetcher.instructions(),
+            setup.text_addr,
+            TRAP_ADDRESS,
+            setup.entry_point,
+            &mut regs,
+            memory,
+        )
+    };
     let host_elapsed = host_start.elapsed();
 
     if stop != threaded::Stop::Done {

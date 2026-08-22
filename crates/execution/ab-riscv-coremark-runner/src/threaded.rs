@@ -36,6 +36,7 @@ use ab_riscv_interpreter::prelude::*;
 use ab_riscv_primitives::prelude::*;
 use core::hint::{cold_path, unreachable_unchecked};
 use core::marker::PhantomData;
+use core::ptr;
 use std::time::Instant;
 
 /// Register type used by the Coremark runner
@@ -666,6 +667,312 @@ impl RegisterFile<R> for ZeroStoreRegisters {
         // SAFETY: the register file always has at least one slot
         *unsafe { self.regs.get_unchecked_mut(0) } = 0;
     }
+}
+
+// --------------------------------------------------------------------------------------------
+// Direct threading
+// --------------------------------------------------------------------------------------------
+
+/// One decoded instruction with its handler resolved next to it.
+///
+/// This is the whole of direct threading: the discriminant and the table lookup it feeds go away,
+/// and the jump target comes straight out of the stream. It costs the slot going from 8 bytes to
+/// 16, and the slot is already 8 bytes for every 2 bytes of guest code, so the decoded program
+/// goes from 4x the size of what it interprets to 8x.
+#[repr(C)]
+pub(crate) struct DirectSlot<Regs, Memory> {
+    handler: DirectHandler<Regs, Memory>,
+    instruction: I,
+}
+
+// Derived would demand `Regs: Copy`, which is not needed: the fields are a function pointer and a
+// `Copy` enum.
+impl<Regs, Memory> Copy for DirectSlot<Regs, Memory> {}
+
+impl<Regs, Memory> Clone for DirectSlot<Regs, Memory> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+/// Position in the direct-threaded stream, the counterpart of [`Ip`]
+pub(crate) struct DirectIp<'a, Regs, Memory>(&'a DirectSlot<Regs, Memory>);
+
+impl<Regs, Memory> Copy for DirectIp<'_, Regs, Memory> {}
+
+impl<Regs, Memory> Clone for DirectIp<'_, Regs, Memory> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+/// Result of a direct-threaded handler, the counterpart of [`SafeNext`]
+type DirectNext<'a, Regs, Memory> = Option<DirectIp<'a, Regs, Memory>>;
+
+/// A single direct-threaded handler, the counterpart of [`SafeHandler`].
+///
+/// Recursive through [`DirectSlot`], which is fine: a function pointer breaks the cycle.
+type DirectHandler<Regs, Memory> = for<'a> fn(
+    DirectIp<'a, Regs, Memory>,
+    &mut Regs,
+    &mut Memory,
+    &mut Ext,
+    &DirectStream<'a, Regs, Memory>,
+    &mut Sys,
+) -> DirectNext<'a, Regs, Memory>;
+
+/// The direct-threaded program, the counterpart of [`Stream`]
+pub(crate) struct DirectStream<'a, Regs, Memory> {
+    instructions: &'a [DirectSlot<Regs, Memory>],
+    base_addr: u64,
+    return_trap: u64,
+}
+
+impl<'a, Regs, Memory> DirectIp<'a, Regs, Memory> {
+    /// Position of the instruction at guest address `address`
+    #[inline(always)]
+    fn at_address(stream: &DirectStream<'a, Regs, Memory>, address: u64) -> Option<Self> {
+        let offset = address.checked_sub(stream.base_addr)?;
+
+        if !offset.is_multiple_of(size_of::<u16>() as u64) {
+            cold_path();
+            return None;
+        }
+
+        Self::at_slot(stream, (offset / size_of::<u16>() as u64) as usize)
+    }
+
+    /// Position of slot `slot` of the stream
+    #[inline(always)]
+    fn at_slot(stream: &DirectStream<'a, Regs, Memory>, slot: usize) -> Option<Self> {
+        Some(Self(stream.instructions.get(slot)?))
+    }
+
+    /// Slot this position refers to
+    #[inline(always)]
+    fn slot(self, stream: &DirectStream<'a, Regs, Memory>) -> usize {
+        // Plain address arithmetic, no dereference, so this stays outside `unsafe`
+        (ptr::from_ref(self.0).addr() - stream.instructions.as_ptr().addr())
+            / size_of::<DirectSlot<Regs, Memory>>()
+    }
+
+    /// The instruction at this position
+    #[inline(always)]
+    fn get(self) -> &'a I {
+        &self.0.instruction
+    }
+
+    /// The handler for the instruction at this position.
+    ///
+    /// This is what replaces the discriminant read and the table lookup.
+    #[inline(always)]
+    fn handler(self) -> DirectHandler<Regs, Memory> {
+        self.0.handler
+    }
+
+    /// Advance by `slots` slots.
+    ///
+    /// # Safety
+    /// The stream must continue for at least `slots` more slots, which the decoded stream ending
+    /// with a jump guarantees for everything that can fall through.
+    #[inline(always)]
+    unsafe fn advance(self, slots: usize) -> Self {
+        // SAFETY: guaranteed by function contract
+        Self(unsafe { &*ptr::from_ref(self.0).add(slots) })
+    }
+}
+
+/// Emits the direct-threaded handlers from the same instruction table the others are built from.
+///
+/// Identical to [`emit_safe_handlers`] apart from the dispatch step: where that one reads a
+/// discriminant and indexes a table, this one takes the handler out of the slot. The `use`
+/// aliases are what let the shared table's bodies expand unchanged - the helper macros they call
+/// spell `Ip::at_slot` and `Stream`, which resolve here to the direct versions.
+macro_rules! emit_direct_handlers {
+    (
+        $ctx:ident, $ip:ident, $next:ident,
+        $($name:ident, $slots:expr, { $($field:ident),* $(,)? }, $body:block);* $(;)?
+    ) => {
+        mod direct_handlers {
+            use super::DirectIp as Ip;
+            use super::DirectStream as Stream;
+            use super::*;
+
+            /// The borrowed components, as [`super::Env`] but over the direct-threaded stream.
+            /// A local item shadows the glob import, so the shared instruction table's bodies
+            /// build this one.
+            struct Env<'a, 'r, Regs, Memory> {
+                regs: &'r mut Regs,
+                memory: &'r mut Memory,
+                ext: &'r mut Ext,
+                stream: &'r Stream<'a, Regs, Memory>,
+                sys: &'r mut Sys,
+            }
+
+            $(
+                #[expect(non_snake_case, reason = "One handler per instruction variant")]
+                #[allow(
+                    unused_variables,
+                    unreachable_code,
+                    reason = "Unconditional jumps do not use the advanced pointer, and trapping \
+                        instructions never reach it"
+                )]
+                pub(super) fn $name<'a, Regs, Memory>(
+                    $ip: Ip<'a, Regs, Memory>,
+                    regs: &mut Regs,
+                    memory: &mut Memory,
+                    ext: &mut Ext,
+                    stream: &Stream<'a, Regs, Memory>,
+                    sys: &mut Sys,
+                ) -> DirectNext<'a, Regs, Memory>
+                where
+                    Regs: RegisterFile<R>,
+                    Memory: VirtualMemory,
+                {
+                    let I::$name { $($field,)* .. } = *$ip.get() else {
+                        // SAFETY: this handler is only ever reached for its own variant
+                        unsafe { unreachable_unchecked() }
+                    };
+                    let $ctx = Env { regs, memory, ext, stream, sys };
+                    // SAFETY: the decoded stream ends with a jump, so anything that can fall
+                    // through has at least this many slots left
+                    let $next = unsafe { $ip.advance($slots) };
+                    let $next = $body;
+                    // The whole point: no discriminant, no table. A free function rather than a
+                    // method so that it also accepts the `!` a trapping instruction's body
+                    // evaluates to, exactly as `table()` does on the other back end.
+                    let handler = direct_handler::<Regs, Memory>($next);
+                    become handler(
+                        $next,
+                        $ctx.regs,
+                        $ctx.memory,
+                        $ctx.ext,
+                        $ctx.stream,
+                        $ctx.sys,
+                    )
+                }
+            )*
+
+            pub(super) fn unsupported<'a, Regs, Memory>(
+                _ip: Ip<'a, Regs, Memory>,
+                _regs: &mut Regs,
+                _memory: &mut Memory,
+                ext: &mut Ext,
+                _stream: &Stream<'a, Regs, Memory>,
+                _sys: &mut Sys,
+            ) -> DirectNext<'a, Regs, Memory>
+            where
+                Regs: RegisterFile<R>,
+                Memory: VirtualMemory,
+            {
+                cold_path();
+                ext.stop = Stop::Unsupported(0);
+                None
+            }
+
+            /// Dispatch table, used once per instruction when the stream is built rather than once
+            /// per instruction executed
+            pub(super) const fn build<Regs, Memory>() -> [DirectHandler<Regs, Memory>; VARIANTS]
+            where
+                Regs: RegisterFile<R>,
+                Memory: VirtualMemory,
+            {
+                let mut table: [DirectHandler<Regs, Memory>; VARIANTS] = [unsupported; VARIANTS];
+                let mut index = 0;
+                let listed: &[DirectHandler<Regs, Memory>] = &[$($name,)*];
+
+                while index < listed.len() {
+                    table[index] = listed[index];
+                    index += 1;
+                }
+
+                table
+            }
+        }
+    };
+}
+
+ops!(emit_direct_handlers);
+
+/// Handler for the instruction at `ip`, the counterpart of [`table()`].
+///
+/// A free function rather than a method so that it also accepts the `!` that a trapping
+/// instruction's body evaluates to, which is what [`table()`] relies on too.
+#[inline(always)]
+fn direct_handler<Regs, Memory>(ip: DirectIp<'_, Regs, Memory>) -> DirectHandler<Regs, Memory> {
+    ip.handler()
+}
+
+struct DirectHandlers<Regs, Memory>(PhantomData<(Regs, Memory)>);
+
+impl<Regs, Memory> DirectHandlers<Regs, Memory>
+where
+    Regs: RegisterFile<R>,
+    Memory: VirtualMemory,
+{
+    const TABLE: [DirectHandler<Regs, Memory>; VARIANTS] = direct_handlers::build::<Regs, Memory>();
+}
+
+/// Resolve every decoded instruction to its handler, once, before execution starts.
+///
+/// This is the work that token threading does per dispatch instead.
+fn build_direct_stream<Regs, Memory>(instructions: &[I]) -> Vec<DirectSlot<Regs, Memory>>
+where
+    Regs: RegisterFile<R>,
+    Memory: VirtualMemory,
+{
+    instructions
+        .iter()
+        .map(|instruction| {
+            // SAFETY: the enum is `#[repr(u16)]`, so its first two bytes are the discriminant
+            let discriminant = unsafe { ptr::from_ref(instruction).cast::<u16>().read() };
+
+            DirectSlot {
+                // Masked rather than truncated for the same reason as `Ip::discriminant`
+                handler: DirectHandlers::<Regs, Memory>::TABLE[usize::from(discriminant as u8)],
+                instruction: *instruction,
+            }
+        })
+        .collect()
+}
+
+/// Run the program with the direct-threaded back end
+pub(crate) fn run_direct_threaded<Regs, Memory>(
+    instructions: &[I],
+    base_addr: u64,
+    return_trap: u64,
+    pc: u64,
+    regs: &mut Regs,
+    memory: &mut Memory,
+) -> Stop
+where
+    Regs: RegisterFile<R>,
+    Memory: VirtualMemory,
+{
+    const {
+        // Two pointers per decoded instruction, against one for token threading
+        assert!(size_of::<DirectSlot<ZeroStoreRegisters, ()>>() == 16);
+    }
+
+    let slots = build_direct_stream::<Regs, Memory>(instructions);
+    let stream = DirectStream {
+        instructions: &slots,
+        base_addr,
+        return_trap,
+    };
+    let mut ext = Ext {
+        start: Instant::now(),
+        stop: Stop::Done,
+    };
+    let mut sys = Sys;
+
+    let Some(ip) = DirectIp::at_address(&stream, pc) else {
+        return Stop::BadJump;
+    };
+    let handler = ip.handler();
+    handler(ip, regs, memory, &mut ext, &stream, &mut sys);
+
+    ext.stop
 }
 
 /// Run the program with the tail-call-threaded back end
