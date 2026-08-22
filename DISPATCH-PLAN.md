@@ -43,8 +43,9 @@ Measured on the CoreMark prototype, 147 variants, `zerostore`, x86-64:
 | cost of an extension you never execute | +11% (89→147 arms) | none measured |
 | toolchain | stable | needs `explicit_tail_calls` |
 
-> **Correction.** The size and speed numbers in this table are the CoreMark prototype's and were
-> never reproduced against the generated implementation — Phase 3 did not run. What was confirmed is
+> **Correction.** The size and speed numbers in this table are the CoreMark prototype's. Phase 3 has
+> since run (see the Phase 3 note in §8 and `DISPATCH-HANDOFF.md` §7a), and the generated path now
+> exceeds the prototype on Zen 4, but these particular ratios were not re-derived against it. What was confirmed is
 > the shape: in a release build of the interpreter's test binary every generated handler ends in an
 > indirect `jmp` through a jump table (`jmp *(%rax,%r11,8)`) and contains no `call` at all, so
 > `become` does emit real tail calls at the real variant count. Treat the ratios as the prototype's
@@ -680,13 +681,19 @@ stays ≤16 bytes with `ContinueNoWrite` in it.
 > * **Phase 2 — done.** `generate_threaded_fns.rs` in `ab-riscv-macros`, in the
 >   instruction-execution macro, generating alongside `execute()`. `#[instruction_execution]`'s
 >   documentation in `ab-riscv-macros-impl/src/lib.rs` gained a paragraph describing it.
-> * **Phase 3 — not done.** No runner or benchmark calls the threaded path; the runners were touched
->   only to enable `explicit_tail_calls` (§6). **No performance number in this document has been
->   reproduced against the generated implementation.** The correctness half is covered by the
->   interpreter's own tests, including `rv64/threaded_tests.rs`, which runs the same programs
->   through both paths and asserts they agree — arithmetic, memory, taken and untaken branches,
->   jumps, failures, and a 1000-iteration loop that would blow any stack if the chain were not real
->   tail calls.
+> * **Phase 3 — done since**, on `claude/risc-v-dispatch-phase-3-tqhzyl`: the CoreMark runner and
+>   the interpreter benchmarks both call the generated path, and it reaches **2948** on Zen 4,
+>   past the prototype's 2666. Four things had to be found first, and they are written up in
+>   `DISPATCH-HANDOFF.md` §7a rather than here, since they are measurements rather than plan: drop
+>   glue on the instruction fetcher costing every fallible handler a stack frame; the failure half
+>   of a relative branch needing to leave the handler by tail call, which is what split
+>   `set_pc_relative()` into `try_set_pc_relative()` and a `#[cold] failed_branch()`; handler
+>   alignment, which is worth 15% on Zen 4 and is the largest single effect found; and the point at
+>   which further alignment work stopped being distinguishable from layout noise. The correctness
+>   half is covered by the interpreter's own tests, including `rv64/threaded_tests.rs`, which runs
+>   the same programs through both paths and asserts they agree — arithmetic, memory, taken and
+>   untaken branches, jumps, failures, and a 1000-iteration loop that would blow any stack if the
+>   chain were not real tail calls.
 > * **Phase 4 — partial.** The vector enums generate handlers and their tests pass, so the
 >   composition builds; it has not been benchmarked, which is the part that was meant to be the
 >   proof.

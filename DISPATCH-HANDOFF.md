@@ -18,7 +18,9 @@ implementation diverged carries a block quote saying so next to the reasoning it
 for the design; read its corrections for what the design became.
 
 Read this one first for §2 (why the `match` is slow), §3 (what won and by how much) and §6 (why only
-one machine's numbers count); then read the plan.
+one machine's numbers count); then read the plan. **§7a is newer than the rest** and is the record
+of Phase 3 - the generated path measured for the first time, what it cost to get it there, and why
+the last of it ran into layout noise rather than into anything about dispatch.
 
 **The exploration lives on branch `claude/risc-v-dispatch-perf-6qtcdo`**, which is a scratchpad and
 is not meant to be merged; the shipped emitter is on `main`. The working prototype, which is still
@@ -680,6 +682,10 @@ turns out to be, it is the floor an effect has to clear before it means anything
 
 ## 7. Where this stands
 
+**Phase 3 has since happened**, on `claude/risc-v-dispatch-phase-3-tqhzyl`: the Coremark runner and
+the interpreter benchmarks now call the generated threaded path, and §7a records what that found.
+The rest of this section is unchanged, and its "what is left is measurement" is what §7a is.
+
 The exploration has answered what it set out to answer. The back end to build is settled — safe
 generic per-instruction handlers, dispatched with `become`, register file as a type parameter — and
 the alternatives that lost are recorded in §3 with the measurements that killed them. Dispatch is no
@@ -707,6 +713,97 @@ What is *not* next, and why, is worth stating so it does not get relitigated: su
 (question 1) were each measured and set aside. The single largest identified win is not a dispatch
 change at all — it is the store-forwarding cost of run-time `x0` handling in question 2, which needs
 a decision about the shared register types rather than an experiment.
+
+## 7a. Phase 3: the generated path, and four things that turned out to matter
+
+Zen 4 (Threadripper 7970X) Coremark went **2384 → 2472 → 2599 → 2948** over the four changes below,
+which is past the prototype's 2666. Xeon B numbers are given where they were the ones measured
+against; where the two machines disagree, that is the point being made.
+
+**1. Drop glue on the instruction fetcher.** The fetcher is moved through the handler chain by
+value, so whichever handler ends execution drops it — and every handler that *can* fail is a
+candidate. LLVM therefore gave each load, store, branch and jump handler a stack frame with
+callee-saved pushes and a spill of the fetcher, in the **hot** path, for cleanup only reached on
+failure. `lw` was 27 instructions before its dispatch tail where it needed 19.
+
+The fix is that the fetcher must have no destructor: ownership of the decoded stream moved into a
+separate type that the fetcher borrows, leaving it a plain 16-byte `Copy` cursor, asserted
+`!needs_drop`. Callers that run the same program repeatedly no longer need a clone either. Xeon B
+Coremark 1949 → 2195 (**+12.6%**), BLAKE3 19.6 → 18.1 µs, ed25519 1.076 → 0.985 ms.
+
+This is worth stating as a rule rather than a fix: **anything moved through a `become` chain by
+value should be `!needs_drop`**, because the cost lands on every handler that has a failure path,
+not on the one that actually drops it.
+
+**2. The failure half of a relative branch.** Working out what is wrong with a branch target — the
+return trap, unaligned, outside the program — was inlined into the handler of every branch and jump:
+`beq` was 71 instructions, 29 of which never execute.
+
+Moving it out with an ordinary call is *worse*, because the handler resumes afterwards, so
+everything it holds must survive a call that clobbers every volatile register — six pushes and pops
+land in the hot path. A tail call costs nothing instead, since the handler is not coming back, but
+`become` demands identical signatures and there is no argument left to carry the error in.
+
+So the fast path stopped producing one. `ProgramCounter::set_pc_relative()` split into
+`try_set_pc_relative()`, which answers with a `bool` and leaves a refused target in the program
+counter, and `failed_branch()`, which is `#[cold]` and reads it back to say what was wrong with it.
+Because the refused target is *in* the program counter, the continuation needs no arguments of its
+own, which is what lets it match the handler signature — so it is **one** cold function per
+instruction set rather than one per variant. `beq` is now 31 instructions with no frame at all, `cj`
+60 → 21. Xeon B Coremark +3.1% median of five interleaved runs; Zen 4 2472 → 2599.
+
+**3. Handler alignment, and how much of all this is placement.** Change 2 left every hot handler
+byte-for-byte identical and merely *moved* them — `add` went from starting at offset 0 of a cache
+line to offset 16 — and on Zen 4 the interpreter benchmarks moved **15%** for it, in the opposite
+direction to Coremark in the same build. Handlers are entered by jumping to them, so one that starts
+part-way into a line spans one more line than it needs to, and that is paid on every guest
+instruction.
+
+`#![feature(fn_align)]` and `#[rustc_align(64)]` on every generated handler (~4 KiB of padding per
+instruction set) took Zen 4 Coremark to **2948**, the best number anywhere in these documents,
+prototypes included, and the threaded benchmarks to their best as well. On Xeon B it is a wash on
+the mean — Coremark +1.8%, benchmarks −1.8% — but it halved the run-to-run spread on all three
+workloads.
+
+**4. …and the limit of that, which is where this stops.** Aligning the handlers left the `match`
+loop to the linker, so the loop moved instead: `BasicInterpreterState::execute()` went from
+line-aligned to offset 32, and on Zen 4 the loop benchmarks lost 20% in the same build that set the
+Coremark record. Aligning the loop too was tried, and it is one attribute rather than 145, since the
+loop is a single function and anchoring its entry fixes the offset of every block inside it.
+
+It did not settle anything. On Zen 4 the loop gained 6% and **the threaded path lost 11% — and the
+threaded path shares no code with the function that was aligned.** On Xeon B the whole spread across
+the three builds was 4%, which is why that machine could not see any of this.
+
+That is the conclusion worth keeping, and it is a methodology result rather than a dispatch result.
+**In a binary this size, layout noise is larger than the effects being chased, and source-level
+alignment cannot fix it** — aligning one thing re-lays out everything else, so each attempt is a
+fresh roll rather than a convergence. The tools that would actually settle it are PGO or BOLT,
+neither of which was tried. Until one of them is:
+
+- Read single-configuration A/B results on the interpreter benchmarks as having a **±15% floor on
+  Zen 4**, and do not chase anything smaller through them.
+- Prefer Coremark, which is one binary running one program, over the Criterion benchmarks, which
+  link the interpreter next to BLAKE3, ed25519 and Criterion itself and move whenever any of that
+  moves.
+- Treat a change that moves a benchmark sharing **no code** with it as evidence about layout, not
+  about the change.
+
+The two alignment changes are in the phase-3 branch. The handler one is supported by the Coremark
+record and by halving the spread on three workloads; the loop one is not supported by anything and
+is a candidate to revert if it ever gets in the way.
+
+Two things measured along the way and not taken:
+
+- **`-C relocation-model=static`** removes the `leaq` that re-materialises the dispatch table
+  address, one instruction per dispatch: Xeon B Coremark 2137 → 2237, **+4.7%**, robust across five
+  interleaved runs. It costs ASLR of the executable image and cannot go in `RUSTFLAGS` (proc-macro
+  crates fail to link non-PIC), only `cargo rustc -- -C relocation-model=static` on the final
+  target. This revises question 2's "unlikely to show up"; it does show up, it is simply not free.
+- **LLVM `-hot-cold-split`** does nothing to these functions, and
+  `#[unsafe(link_section = ".text.unlikely")]` on the cold continuation does not move it either —
+  lld merges the section into `.text` without reordering unless given
+  `-z keep-text-section-prefix`.
 
 ## 8. Open questions
 
