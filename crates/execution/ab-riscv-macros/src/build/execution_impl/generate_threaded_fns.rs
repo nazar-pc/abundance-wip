@@ -251,6 +251,14 @@ pub(super) fn generate_threaded_fns(
                 improper_ctypes_definitions,
                 reason = "Handlers only ever call each other, within this crate"
             )]
+            // Dispatch enters here, and where "here" lands within a cache line is otherwise
+            // whatever the linker happened to arrange. A handler that starts part-way into a line
+            // spans one more of them than it needs to, and since every handler ends by jumping to
+            // another one, that is paid on every instruction the guest executes. It also makes the
+            // interpreter's throughput a function of the code around it: the same handlers, byte
+            // for byte, measured 15% apart on one machine purely because an unrelated change moved
+            // them. Starting each one on a line boundary costs padding and buys back both.
+            #[rustc_align(64)]
             #target_feature
             unsafe #abi fn #handler_fn_name<#generic_params>(
                 instruction: #self_ty,
