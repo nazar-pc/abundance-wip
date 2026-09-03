@@ -14,7 +14,7 @@ use core::hint::cold_path;
 use core::marker::PhantomData;
 use core::ops::ControlFlow;
 use core::ptr::NonNull;
-use core::{fmt, mem};
+use core::{fmt, mem, slice};
 
 /// Everything [`BasicEagerInstructionFetcher`] needs besides its position within the decoded
 /// instruction stream.
@@ -194,6 +194,16 @@ where
     #[cfg_attr(feature = "no-panic", no_panic_const::no_panic)]
     fn instructions_len(&self) -> usize {
         self.state().instructions_len
+    }
+
+    /// The decoded instructions as a slice.
+    ///
+    /// Only the dispatch prototypes in `ab-riscv-coremark-runner` need this: they build their own
+    /// streams out of the same decoded instructions the shipped path walks, so that what is
+    /// compared is dispatch and nothing else.
+    pub fn decoded(&self) -> &[I] {
+        // SAFETY: Initialized in the constructor, and borrowed for as long as `self` is
+        unsafe { slice::from_raw_parts(self.instructions().as_ptr(), self.instructions_len()) }
     }
 
     /// Guest address that corresponds to the first decoded instruction
