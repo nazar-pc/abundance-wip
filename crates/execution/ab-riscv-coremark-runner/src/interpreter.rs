@@ -1,9 +1,9 @@
 use crate::instruction::CoremarkInstruction;
 use ab_riscv_interpreter::prelude::*;
 use ab_riscv_primitives::prelude::*;
-use core::fmt;
 use core::marker::PhantomData;
 use core::ops::ControlFlow;
+use core::{fmt, slice};
 use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 use std::hint::cold_path;
 use std::ptr::NonNull;
@@ -259,6 +259,16 @@ impl EagerInstructions {
         // SAFETY: Decoded instructions are stored at this offset of the same allocation as the
         // state
         unsafe { self.state.byte_add(Self::INSTRUCTIONS_OFFSET) }.cast::<CoremarkInstruction>()
+    }
+
+    /// The decoded instructions as a slice.
+    ///
+    /// Only the dispatch prototypes in `threaded` need this: they build their own streams out of
+    /// the same decoded instructions the shipped path walks, so that what is compared is dispatch
+    /// and nothing else.
+    pub(crate) fn decoded(&self) -> &[CoremarkInstruction] {
+        // SAFETY: Initialized in the constructor, and borrowed for as long as `self` is
+        unsafe { slice::from_raw_parts(self.instructions().as_ptr(), self.instructions_len()) }
     }
 
     /// Number of decoded instructions
