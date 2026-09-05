@@ -1280,6 +1280,25 @@ the way the padding result was.
     **And the ceiling, if it ever does become live here.** Indirect mispredicts are 0.0108 per
     guest instruction on Zen 4 (question 2) — roughly 3% of runtime at ~18 cycles each. This
     workload is nothing like Wasmi's 50% case; even a perfect fix would be worth a few per cent.
+12. **Dropping the padding `rs1`/`rs2` fields, once `freeze` exists.** The enum definition adds
+    `rs1` and `rs2` to every variant that does not have them, so that `get_rs1_rs2_operands()` and
+    the `match` loop's operand preamble can read both source registers from any instruction
+    without first finding out which one it holds. Those two bytes are what keeps `Jal`, `Lui`,
+    `Auipc` and `CLui` on a three-byte `I24`: tag, two padding registers, `rd` and three bytes of
+    immediate is exactly the eight-byte slot, and a fourth byte for the immediate, which would make
+    it one load instead of two loads and a shift, puts the enum at twelve. The threaded handlers
+    do not need the padding at all, since each destructures its own variant and could substitute
+    zero for a source register the variant lacks; only the `match` loop does.
+
+    [RFC 4001] proposes `MaybeUninit::freeze()`, which turns uninitialized bytes into arbitrary but
+    defined values, the way LLVM's `freeze` does. With it the loop could read the two register
+    indices from fixed offsets of *every* variant, padding included: a variant without a source
+    register yields some register index, reading that register is harmless because the arm ignores
+    the value, and the fields themselves go away. The index has to be masked to the register count
+    before it is used, since a frozen byte can hold anything, which is one instruction per operand
+    on the `match` path and nothing on the threaded one. Open until the operation lands.
+
+    [RFC 4001]: https://github.com/rust-lang/rfcs/pull/4001
 
 ## 9. What was built, and where it diverged from the plan
 
