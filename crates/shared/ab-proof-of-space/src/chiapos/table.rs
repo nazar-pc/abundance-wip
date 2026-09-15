@@ -169,6 +169,7 @@ fn partial_ys<const K: u8>(seed: Seed) -> Box<[u8; TABLE_1_PARTIAL_YS_SIZE::<K>]
 
 /// Compute `y`s of the first table out of the ChaCha8 keystream
 #[cfg(feature = "alloc")]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 fn compute_table_1_ys<'a, const K: u8>(
     partial_ys: &[u8; TABLE_1_PARTIAL_YS_SIZE::<K>],
     ys: &'a mut [MaybeUninit<Y>; MAX_TABLE_SIZE::<K>],
@@ -256,6 +257,7 @@ fn group_by_buckets<const K: u8>(
 
 /// The part of [`group_by_buckets()`] that works with already allocated memory
 #[cfg(feature = "alloc")]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 fn group_by_buckets_internal<const K: u8>(
     ys: &[Y],
     buckets: &mut [[MaybeUninit<(Position, Y)>; REDUCED_BUCKET_SIZE]; NUM_BUCKETS::<K>],
@@ -287,6 +289,7 @@ fn group_by_buckets_internal<const K: u8>(
 /// # Safety
 /// Bucket lengths must not exceed [`REDUCED_BUCKET_SIZE`].
 #[cfg(feature = "alloc")]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 unsafe fn fill_bucket_tails<const K: u8>(
     buckets: &mut [[MaybeUninit<(Position, Y)>; REDUCED_BUCKET_SIZE]; NUM_BUCKETS::<K>],
     bucket_lengths: &[u16; NUM_BUCKETS::<K>],
@@ -398,6 +401,7 @@ unsafe fn group_by_buckets_from_buckets<const K: u8>(
 /// # Safety
 /// `counts` must be the number of initialized `y`s in each entry of `ys`.
 #[cfg(feature = "parallel")]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 unsafe fn count_ys_in_buckets<const K: u8>(
     ys: &[[MaybeUninit<Y>; REDUCED_MATCHES_COUNT]],
     counts: &[u16],
@@ -427,6 +431,7 @@ unsafe fn count_ys_in_buckets<const K: u8>(
 /// the position of the first `y` of `ys`, `chunk_offsets` must be the offsets within buckets that
 /// are reserved exclusively for this chunk.
 #[cfg(feature = "parallel")]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 unsafe fn scatter_ys_into_buckets<const K: u8>(
     ys: &[[MaybeUninit<Y>; REDUCED_MATCHES_COUNT]],
     counts: &[u16],
@@ -468,6 +473,7 @@ unsafe fn scatter_ys_into_buckets<const K: u8>(
     }
 }
 
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 fn calculate_left_target_on_demand(parity: u32, r: u32, m: u32) -> u32 {
     let param_b = u32::from(PARAM_B);
     let param_c = u32::from(PARAM_C);
@@ -484,6 +490,7 @@ struct Match {
 }
 
 /// `partial_y_offset` is in bits within `partial_y`
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub(super) fn compute_f1<const K: u8>(x: X, seed: &Seed) -> Y {
     const U32S_PER_BLOCK: usize = size_of::<ChaCha8Block>() / size_of::<u32>();
 
@@ -524,6 +531,7 @@ pub(super) fn compute_f1<const K: u8>(x: X, seed: &Seed) -> Y {
 }
 
 #[cfg(any(feature = "alloc", test))]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub(super) fn compute_f1_simd<const K: u8>(
     xs: Simd<u32, COMPUTE_F1_SIMD_FACTOR>,
     partial_ys: &[u8; TABLE_1_YS_BATCH_SIMD::<K>],
@@ -571,6 +579,7 @@ pub(super) fn compute_f1_simd<const K: u8>(
 // TODO: Try to reduce the `matches` size further by processing `left_bucket` in chunks (like halves
 //  for example)
 #[cfg(feature = "alloc")]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 unsafe fn find_matches_in_buckets<'a>(
     left_bucket_index: u32,
     left_bucket: &[(Position, Y); REDUCED_BUCKET_SIZE],
@@ -641,19 +650,22 @@ unsafe fn find_matches_in_buckets<'a>(
 }
 
 /// Simplified version of [`find_matches_in_buckets`] for verification purposes.
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub(super) fn has_match(left_y: Y, right_y: Y) -> bool {
     let right_r = u32::from(right_y) % u32::from(PARAM_BC);
     let parity = (u32::from(left_y) / u32::from(PARAM_BC)) % 2;
     let left_r = u32::from(left_y) % u32::from(PARAM_BC);
 
-    let r_targets = array::from_fn::<_, const { usize::from(PARAM_M) }, _>(|i| {
-        calculate_left_target_on_demand(parity, left_r, i as u32)
-    });
+    // NOTE: The number of targets is specified as a type annotation rather than a turbofish
+    // because `no_panic::no_panic` fails to parse const generic arguments
+    let r_targets: [_; const { usize::from(PARAM_M) }] =
+        array::from_fn(|i| calculate_left_target_on_demand(parity, left_r, i as u32));
 
     r_targets.contains(&right_r)
 }
 
 #[inline(always)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub(super) fn compute_fn<const K: u8, const TABLE_NUMBER: u8, const PARENT_TABLE_NUMBER: u8>(
     y: Y,
     left_metadata: Metadata<K, PARENT_TABLE_NUMBER>,
@@ -740,6 +752,7 @@ pub(super) fn compute_fn<const K: u8, const TABLE_NUMBER: u8, const PARENT_TABLE
 //  * https://github.com/rust-lang/portable-simd/issues/108
 //  * https://github.com/BLAKE3-team/BLAKE3/issues/478#issuecomment-3200106103
 #[cfg(any(feature = "alloc", test))]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 fn compute_fn_simd<const K: u8, const TABLE_NUMBER: u8, const PARENT_TABLE_NUMBER: u8>(
     left_ys: [Y; COMPUTE_FN_SIMD_FACTOR],
     left_metadatas: [Metadata<K, PARENT_TABLE_NUMBER>; COMPUTE_FN_SIMD_FACTOR],
@@ -868,6 +881,7 @@ fn compute_fn_simd<const K: u8, const TABLE_NUMBER: u8, const PARENT_TABLE_NUMBE
 /// `m` must contain positions that correspond to the parent table
 #[cfg(feature = "alloc")]
 #[inline(always)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 unsafe fn match_to_result<const K: u8, const TABLE_NUMBER: u8, const PARENT_TABLE_NUMBER: u8>(
     parent_table: &Table<K, PARENT_TABLE_NUMBER>,
     m: &Match,
@@ -890,6 +904,7 @@ where
 /// `matches` must contain positions that correspond to the parent table
 #[cfg(feature = "alloc")]
 #[inline(always)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 unsafe fn match_to_result_simd<const K: u8, const TABLE_NUMBER: u8, const PARENT_TABLE_NUMBER: u8>(
     parent_table: &Table<K, PARENT_TABLE_NUMBER>,
     matches: &[Match; COMPUTE_FN_SIMD_FACTOR],
@@ -954,6 +969,7 @@ where
 /// `metadatas` length must be at least the length of `matches`
 #[cfg(feature = "alloc")]
 #[inline(always)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 unsafe fn matches_to_results<const K: u8, const TABLE_NUMBER: u8, const PARENT_TABLE_NUMBER: u8>(
     parent_table: &Table<K, PARENT_TABLE_NUMBER>,
     matches: &[Match],
@@ -1024,6 +1040,7 @@ unsafe fn matches_to_results<const K: u8, const TABLE_NUMBER: u8, const PARENT_T
 /// many elements as there are matches in the pair of buckets (at most [`REDUCED_MATCHES_COUNT`]).
 #[cfg(feature = "alloc")]
 #[inline(always)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 unsafe fn bucket_pair_to_results<
     const K: u8,
     const TABLE_NUMBER: u8,
@@ -1073,6 +1090,7 @@ where
 /// Buckets must come from `parent_table`.
 #[cfg(feature = "alloc")]
 #[inline(always)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 unsafe fn bucket_pair_to_proof_targets<const K: u8>(
     parent_table: &Table<K, 6>,
     left_bucket_index: u32,
@@ -1119,6 +1137,7 @@ unsafe fn bucket_pair_to_proof_targets<const K: u8>(
 /// Store a proof target unless a target for this s-bucket was already found
 #[cfg(feature = "alloc")]
 #[inline(always)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 fn store_proof_target(
     table_6_proof_targets: &mut [[Position; 2]; const { Record::NUM_S_BUCKETS }],
     s_bucket: u16,
@@ -1166,6 +1185,7 @@ impl<const K: u8, const TABLE_NUMBER: u8> PrunedTable<K, TABLE_NUMBER> {
     /// `self` must not be [`Self::First`], `position` must come from [`Table::buckets()`] or
     /// [`Self::position()`] and not be a sentinel value.
     #[inline(always)]
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     pub(super) unsafe fn position(&self, position: Position) -> [Position; 2] {
         match self {
             Self::First => {
@@ -1369,6 +1389,7 @@ where
 
     /// The part of [`Self::create()`] that works with already allocated memory, returns the number
     /// of initialized elements in each of the outputs
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     fn create_internal<const PARENT_TABLE_NUMBER: u8>(
         parent_table: &Table<K, PARENT_TABLE_NUMBER>,
         ys: &mut [MaybeUninit<Y>; MAX_TABLE_SIZE::<K>],
@@ -1514,6 +1535,7 @@ where
     /// `self` must not be [`Self::First`], `position` must come from [`Self::buckets()`] or
     /// [`Self::position()`] or [`PrunedTable::position()`] and not be a sentinel value.
     #[inline(always)]
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     pub(super) unsafe fn position(&self, position: Position) -> [Position; 2] {
         #[expect(
             clippy::rest_pattern_accessible_field,
@@ -1571,6 +1593,7 @@ where
     }
 
     /// The part of [`Self::create_proof_targets()`] that works with already allocated memory
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     fn create_proof_targets_internal(
         parent_table: &Table<K, 6>,
         table_6_proof_targets: &mut [[Position; 2]; const { Record::NUM_S_BUCKETS }],
@@ -1694,6 +1717,7 @@ where
     /// # Safety
     /// `counts` must be the number of initialized targets in each entry of `buckets_targets`.
     #[cfg(feature = "parallel")]
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     unsafe fn merge_proof_targets(
         buckets_targets: &BucketsProofTargets<K>,
         counts: &[u16; NUM_BUCKET_PAIRS::<K>],
@@ -1725,6 +1749,7 @@ where
     /// # Safety
     /// `position` must come from [`Self::buckets()`] and not be a sentinel value.
     #[inline(always)]
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     unsafe fn metadata(&self, position: Position) -> Metadata<K, TABLE_NUMBER> {
         #[expect(
             clippy::rest_pattern_accessible_field,
@@ -1756,6 +1781,7 @@ where
 #[cfg(feature = "alloc")]
 impl<const K: u8, const TABLE_NUMBER: u8> Table<K, TABLE_NUMBER> {
     #[inline(always)]
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     fn prune(self) -> PrunedTable<K, TABLE_NUMBER> {
         #[expect(
             clippy::rest_pattern_accessible_field,
@@ -1771,6 +1797,7 @@ impl<const K: u8, const TABLE_NUMBER: u8> Table<K, TABLE_NUMBER> {
 
     /// Positions of `y`s grouped by the bucket they belong to
     #[inline(always)]
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     pub(super) fn buckets(&self) -> &[[(Position, Y); REDUCED_BUCKET_SIZE]; NUM_BUCKETS::<K>] {
         #[expect(
             clippy::rest_pattern_accessible_field,

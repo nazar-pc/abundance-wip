@@ -59,6 +59,8 @@ pub struct Proofs<const K: u8> {
 
 #[cfg(feature = "alloc")]
 impl From<Box<Proofs<const { PosProof::K }>>> for Box<PosProofs> {
+    // NOTE: `no_panic::no_panic` is not applicable here because it fails to parse const generic
+    // arguments, the body is a pointer cast that can't panic anyway
     fn from(proofs: Box<Proofs<const { PosProof::K }>>) -> Self {
         // Statically ensure types are the same
         const {
@@ -84,6 +86,7 @@ impl<const K: u8> Proofs<K> {
     /// Note that this is not the most efficient API possible, so prefer using the `proofs` field
     /// directly if the use case allows.
     #[inline]
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     pub fn for_s_bucket(&self, s_bucket: SBucket) -> Option<[u8; PROOF_SIZE::<K>]> {
         let proof_index = PosProofs::proof_index_for_s_bucket(&self.found_proofs, s_bucket)?;
 
@@ -99,6 +102,7 @@ impl<const K: u8> Proofs<K> {
     /// Initialize `found_proofs` with zeroes and return both fields separately, so that proofs can
     /// be written into still uninitialized `proofs`
     #[inline(always)]
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     fn split_uninit(
         proofs: &mut MaybeUninit<Self>,
     ) -> (
@@ -151,6 +155,7 @@ const EXPANDED_POSITIONS<const N: usize>: usize = N * 2;
 /// Expand each position into the pair of positions in the parent table it was derived from
 #[cfg(feature = "alloc")]
 #[inline(always)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 fn expand_positions<const N: usize>(
     positions: [Position; N],
     expand: impl Fn(Position) -> [Position; 2],
@@ -244,6 +249,7 @@ where
     /// Find a proof for each s-bucket that has a target in the last table
     // TODO: Rewrite this more efficiently
     #[cfg(feature = "alloc")]
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     fn find_proofs_internal(
         table_2: &PrunedTable<K, 2>,
         table_3: &PrunedTable<K, 3>,
@@ -366,6 +372,7 @@ where
     /// Collect targets in the last table for s-buckets that have a proof, which is the cheap
     /// sequential part of [`Self::create_proofs_parallel()`]
     #[cfg(feature = "parallel")]
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     fn collect_proof_targets<'a>(
         table_6_proof_targets: &[[Position; 2]; const { Record::NUM_S_BUCKETS }],
         found_proofs: &mut [u8; Record::NUM_S_BUCKETS / u8::BITS as usize],
@@ -412,6 +419,7 @@ where
 
     /// Find proof of space quality for a given challenge
     #[cfg(all(feature = "alloc", any(feature = "full-chiapos", test)))]
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     pub fn find_quality<'a>(
         &'a self,
         challenge: &'a Challenge,
@@ -485,6 +493,7 @@ where
     /// Similar to `Self::find_proof()`, but takes the first `k` challenge bits in the least
     /// significant bits of `u32` as a challenge instead
     #[cfg(feature = "alloc")]
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     pub fn find_proof_raw(
         &self,
         first_k_challenge_bits: u32,
@@ -519,6 +528,7 @@ where
 
     #[cfg(feature = "alloc")]
     #[inline(always)]
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     fn find_proof_raw_internal(
         table_2: &PrunedTable<K, 2>,
         table_3: &PrunedTable<K, 3>,
@@ -591,6 +601,7 @@ where
 
     /// Find proof of space for a given challenge
     #[cfg(all(feature = "alloc", any(feature = "full-chiapos", test)))]
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     pub fn find_proof(
         &self,
         first_challenge_bytes: [u8; 4],
@@ -603,6 +614,7 @@ where
 
     /// Similar to `Self::verify()`, but takes the first `k` challenge bits in the least significant
     /// bits of `u32` as a challenge instead and doesn't compute quality
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     pub fn verify_only_raw(
         seed: &Seed,
         first_k_challenge_bits: u32,
@@ -656,6 +668,8 @@ where
     }
 
     /// Verify proof of space for a given seed and challenge
+    // NOTE: `no_panic::no_panic` is not applicable here because the compiler is unable to prove
+    // that `sha2` doesn't panic
     #[cfg(any(feature = "full-chiapos", test))]
     pub fn verify(
         seed: &Seed,
@@ -701,6 +715,7 @@ where
         Some(hasher.finalize().into())
     }
 
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     fn collect_ys_and_metadata<
         'a,
         const TABLE_NUMBER: u8,
