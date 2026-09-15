@@ -22,14 +22,12 @@ use ab_core_primitives::pos::PosProof;
 use ab_core_primitives::sectors::SBucket;
 #[cfg(feature = "alloc")]
 use alloc::boxed::Box;
-#[cfg(feature = "parallel")]
-use alloc::vec::Vec;
-use core::array;
 #[cfg(feature = "alloc")]
 use core::mem;
 use core::mem::MaybeUninit;
 #[cfg(feature = "alloc")]
 use core::mem::offset_of;
+use core::{array, hint};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 #[cfg(any(feature = "full-chiapos", test))]
@@ -89,7 +87,40 @@ impl<const K: u8> Proofs<K> {
     pub fn for_s_bucket(&self, s_bucket: SBucket) -> Option<[u8; PROOF_SIZE::<K>]> {
         let proof_index = PosProofs::proof_index_for_s_bucket(&self.found_proofs, s_bucket)?;
 
+        // SAFETY: At most `Record::NUM_CHUNKS` bits of `found_proofs` are set, which is an
+        // invariant of this data structure, hence the index of any of them fits into `proofs`
+        unsafe {
+            hint::assert_unchecked(proof_index < Record::NUM_CHUNKS);
+        }
+
         Some(self.proofs[proof_index])
+    }
+
+    /// Initialize `found_proofs` with zeroes and return both fields separately, so that proofs can
+    /// be written into still uninitialized `proofs`
+    #[inline(always)]
+    fn split_uninit(
+        proofs: &mut MaybeUninit<Self>,
+    ) -> (
+        &mut [u8; Record::NUM_S_BUCKETS / u8::BITS as usize],
+        &mut [MaybeUninit<[u8; PROOF_SIZE::<K>]>; const { Record::NUM_CHUNKS }],
+    ) {
+        let proofs_ptr = proofs.as_mut_ptr();
+        // SAFETY: This is the correct way to access uninit reference to the inner field
+        let found_proofs = unsafe {
+            (&raw mut (*proofs_ptr).found_proofs)
+                .as_uninit_mut()
+                .expect("Not null; qed")
+        };
+        let found_proofs = found_proofs.write([0; _]);
+        // SAFETY: This is the correct way to access uninit reference to the inner field
+        let proofs = unsafe {
+            (&raw mut (*proofs_ptr).proofs)
+                .cast::<[MaybeUninit<_>; const { Record::NUM_CHUNKS }]>()
+                .as_mut_unchecked()
+        };
+
+        (found_proofs, proofs)
     }
 }
 
@@ -195,63 +226,71 @@ where
         let (table_6, table_5) = Table::<K, 6>::create(table_5);
         let (table_6_proof_targets, table_6) = Table::<K, 7>::create_proof_targets(table_6);
 
-        // TODO: Rewrite this more efficiently
         let mut proofs = Box::<Proofs<K>>::new_uninit();
-        {
-            let proofs_ptr = proofs.as_mut().as_mut_ptr();
-            // SAFETY: This is the correct way to access uninit reference to the inner field
-            let found_proofs = unsafe {
-                (&raw mut (*proofs_ptr).found_proofs)
-                    .as_uninit_mut()
-                    .expect("Not null; qed")
-            };
-            let found_proofs = found_proofs.write([0; _]);
-            // SAFETY: This is the correct way to access uninit reference to the inner field
-            let proofs = unsafe {
-                (&raw mut (*proofs_ptr).proofs)
-                    .cast::<[MaybeUninit<_>; const { Record::NUM_CHUNKS }]>()
-                    .as_mut_unchecked()
-            };
-
-            let mut num_found_proofs = 0_usize;
-            'outer: for (table_6_proof_targets, found_proofs) in table_6_proof_targets
-                .as_chunks::<{ u8::BITS as usize }>()
-                .0
-                .iter()
-                .zip(found_proofs)
-            {
-                for (proof_offset, table_6_proof_targets) in
-                    table_6_proof_targets.iter().enumerate()
-                {
-                    if table_6_proof_targets != &[Position::ZERO; 2] {
-                        let proof = Self::find_proof_raw_internal(
-                            &table_2,
-                            &table_3,
-                            &table_4,
-                            &table_5,
-                            &table_6,
-                            *table_6_proof_targets,
-                        );
-
-                        *found_proofs |= 1 << proof_offset;
-
-                        proofs[num_found_proofs].write(proof);
-                        num_found_proofs += 1;
-
-                        if num_found_proofs == Record::NUM_CHUNKS {
-                            break 'outer;
-                        }
-                    }
-                }
-            }
-
-            // It is statically known to be the case, and there is a test that checks the lower
-            // bound
-            debug_assert_eq!(num_found_proofs, Record::NUM_CHUNKS);
-        }
+        Self::find_proofs_internal(
+            &table_2,
+            &table_3,
+            &table_4,
+            &table_5,
+            &table_6,
+            &table_6_proof_targets,
+            &mut proofs,
+        );
 
         // SAFETY: Fully initialized above
         unsafe { proofs.assume_init() }
+    }
+
+    /// Find a proof for each s-bucket that has a target in the last table
+    // TODO: Rewrite this more efficiently
+    #[cfg(feature = "alloc")]
+    fn find_proofs_internal(
+        table_2: &PrunedTable<K, 2>,
+        table_3: &PrunedTable<K, 3>,
+        table_4: &PrunedTable<K, 4>,
+        table_5: &PrunedTable<K, 5>,
+        table_6: &PrunedTable<K, 6>,
+        table_6_proof_targets: &[[Position; 2]; const { Record::NUM_S_BUCKETS }],
+        proofs: &mut MaybeUninit<Proofs<K>>,
+    ) {
+        let (found_proofs, proofs) = Proofs::<K>::split_uninit(proofs);
+
+        let mut num_found_proofs = 0_usize;
+        'outer: for (table_6_proof_targets, found_proofs) in table_6_proof_targets
+            .as_chunks::<{ u8::BITS as usize }>()
+            .0
+            .iter()
+            .zip(found_proofs)
+        {
+            for (proof_offset, table_6_proof_targets) in table_6_proof_targets.iter().enumerate() {
+                if table_6_proof_targets != &[Position::ZERO; 2] {
+                    let proof = Self::find_proof_raw_internal(
+                        table_2,
+                        table_3,
+                        table_4,
+                        table_5,
+                        table_6,
+                        *table_6_proof_targets,
+                    );
+
+                    *found_proofs |= 1 << proof_offset;
+
+                    // SAFETY: The loop is stopped as soon as `Record::NUM_CHUNKS` proofs are found
+                    unsafe {
+                        hint::assert_unchecked(num_found_proofs < Record::NUM_CHUNKS);
+                    }
+                    proofs[num_found_proofs].write(proof);
+                    num_found_proofs += 1;
+
+                    if num_found_proofs == Record::NUM_CHUNKS {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+
+        // It is statically known to be the case, and there is a test that checks the lower bound
+        debug_assert_eq!(num_found_proofs, Record::NUM_CHUNKS);
     }
 
     /// Almost the same as [`Self::create()`], but uses parallelism internally for better
@@ -289,55 +328,26 @@ where
         let (table_6_proof_targets, table_6) =
             Table::<K, 7>::create_proof_targets_parallel(table_6);
 
-        // TODO: Rewrite this more efficiently
         let mut proofs = Box::<Proofs<K>>::new_uninit();
+        // SAFETY: Contents is `MaybeUninit`
+        let mut targets = unsafe {
+            Box::<[MaybeUninit<[Position; 2]>; const { Record::NUM_CHUNKS }]>::new_uninit()
+                .assume_init()
+        };
         {
-            let proofs_ptr = proofs.as_mut().as_mut_ptr();
-            // SAFETY: This is the correct way to access uninit reference to the inner field
-            let found_proofs = unsafe {
-                (&raw mut (*proofs_ptr).found_proofs)
-                    .as_uninit_mut()
-                    .expect("Not null; qed")
-            };
-            let found_proofs = found_proofs.write([0; _]);
-            // SAFETY: This is the correct way to access uninit reference to the inner field
-            let proofs = unsafe {
-                (&raw mut (*proofs_ptr).proofs)
-                    .cast::<[MaybeUninit<_>; const { Record::NUM_CHUNKS }]>()
-                    .as_mut_unchecked()
-            };
+            let (found_proofs, proofs) = Proofs::<K>::split_uninit(&mut proofs);
 
             // Deciding which s-buckets have a proof is cheap, so it is done sequentially, leaving
             // only the expensive part below to do in parallel
-            let mut targets = Vec::with_capacity(Record::NUM_CHUNKS);
-            'outer: for (table_6_proof_targets, found_proofs) in table_6_proof_targets
-                .as_chunks::<{ u8::BITS as usize }>()
-                .0
-                .iter()
-                .zip(found_proofs)
-            {
-                for (proof_offset, table_6_proof_targets) in
-                    table_6_proof_targets.iter().enumerate()
-                {
-                    if table_6_proof_targets != &[Position::ZERO; 2] {
-                        *found_proofs |= 1 << proof_offset;
+            let targets =
+                Self::collect_proof_targets(&table_6_proof_targets, found_proofs, &mut targets);
 
-                        targets.push(*table_6_proof_targets);
-
-                        if targets.len() == Record::NUM_CHUNKS {
-                            break 'outer;
-                        }
-                    }
-                }
-            }
-
-            let num_found_proofs = targets.len();
             // Work items here are large enough that `rayon::broadcast()` with manual batching (as
             // used elsewhere in this crate) measures the same, so the safe version is used
-            proofs[..num_found_proofs]
+            proofs[..targets.len()]
                 .par_iter_mut()
                 .zip(targets)
-                .for_each(|(proof, table_6_proof_targets)| {
+                .for_each(|(proof, &table_6_proof_targets)| {
                     proof.write(Self::find_proof_raw_internal(
                         &table_2,
                         &table_3,
@@ -347,14 +357,57 @@ where
                         table_6_proof_targets,
                     ));
                 });
-
-            // It is statically known to be the case, and there is a test that checks the lower
-            // bound
-            debug_assert_eq!(num_found_proofs, Record::NUM_CHUNKS);
         }
 
         // SAFETY: Fully initialized above
         unsafe { proofs.assume_init() }
+    }
+
+    /// Collect targets in the last table for s-buckets that have a proof, which is the cheap
+    /// sequential part of [`Self::create_proofs_parallel()`]
+    #[cfg(feature = "parallel")]
+    fn collect_proof_targets<'a>(
+        table_6_proof_targets: &[[Position; 2]; const { Record::NUM_S_BUCKETS }],
+        found_proofs: &mut [u8; Record::NUM_S_BUCKETS / u8::BITS as usize],
+        targets: &'a mut [MaybeUninit<[Position; 2]>; const { Record::NUM_CHUNKS }],
+    ) -> &'a [[Position; 2]] {
+        let mut num_found_proofs = 0_usize;
+
+        'outer: for (table_6_proof_targets, found_proofs) in table_6_proof_targets
+            .as_chunks::<{ u8::BITS as usize }>()
+            .0
+            .iter()
+            .zip(found_proofs)
+        {
+            for (proof_offset, table_6_proof_targets) in table_6_proof_targets.iter().enumerate() {
+                if table_6_proof_targets != &[Position::ZERO; 2] {
+                    *found_proofs |= 1 << proof_offset;
+
+                    // SAFETY: The loop is stopped as soon as `Record::NUM_CHUNKS` targets are
+                    // collected
+                    unsafe {
+                        hint::assert_unchecked(num_found_proofs < Record::NUM_CHUNKS);
+                    }
+                    targets[num_found_proofs].write(*table_6_proof_targets);
+                    num_found_proofs += 1;
+
+                    if num_found_proofs == Record::NUM_CHUNKS {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+
+        // It is statically known to be the case, and there is a test that checks the lower bound
+        debug_assert_eq!(num_found_proofs, Record::NUM_CHUNKS);
+
+        // SAFETY: The loop above is stopped as soon as `Record::NUM_CHUNKS` targets are collected
+        unsafe {
+            hint::assert_unchecked(num_found_proofs <= Record::NUM_CHUNKS);
+        }
+
+        // SAFETY: Initialized this many elements above
+        unsafe { targets[..num_found_proofs].assume_init_ref() }
     }
 
     /// Find proof of space quality for a given challenge
@@ -371,8 +424,12 @@ where
                 .expect("Challenge is known to statically have enough bytes; qed"),
         ) >> (u32::BITS as usize - usize::from(K));
 
-        // Iterate just over elements that are matching `first_k_challenge_bits` prefix
-        self.table_7.buckets()[Y::bucket_range_from_first_k_bits(first_k_challenge_bits)]
+        // Iterate just over elements that are matching `first_k_challenge_bits` prefix, a
+        // challenge with more than the first `K` bits set simply doesn't have any
+        self.table_7
+            .buckets()
+            .get(Y::bucket_range_from_first_k_bits(first_k_challenge_bits))
+            .unwrap_or(&[])
             .iter()
             .flat_map(move |positions| {
                 positions
@@ -432,8 +489,12 @@ where
         &self,
         first_k_challenge_bits: u32,
     ) -> impl Iterator<Item = [u8; PROOF_SIZE::<K>]> + '_ {
-        // Iterate just over elements that are matching `first_k_challenge_bits` prefix
-        self.table_7.buckets()[Y::bucket_range_from_first_k_bits(first_k_challenge_bits)]
+        // Iterate just over elements that are matching `first_k_challenge_bits` prefix, a
+        // challenge with more than the first `K` bits set simply doesn't have any
+        self.table_7
+            .buckets()
+            .get(Y::bucket_range_from_first_k_bits(first_k_challenge_bits))
+            .unwrap_or(&[])
             .iter()
             .flat_map(move |positions| {
                 positions
@@ -649,6 +710,11 @@ where
         ys_and_metadata: &[(Y, Metadata<K, PARENT_TABLE_NUMBER>)],
         next_ys_and_metadata: &'a mut [MaybeUninit<(Y, Metadata<K, TABLE_NUMBER>)>; N],
     ) -> &'a [(Y, Metadata<K, TABLE_NUMBER>)] {
+        // At most one match is produced for every two inputs, so there can never be more inputs
+        // than `N * 2` here. Limiting them explicitly is what allows the compiler to see that the
+        // writes below are within bounds.
+        let ys_and_metadata = &ys_and_metadata[..ys_and_metadata.len().min(N * 2)];
+
         let mut next_offset = 0_usize;
         for &[(left_y, left_metadata), (right_y, right_metadata)] in
             ys_and_metadata.as_chunks::<2>().0
@@ -657,6 +723,11 @@ where
                 continue;
             }
 
+            // SAFETY: Inputs are limited to `N * 2` elements above and at most one match is
+            // produced for every two of them
+            unsafe {
+                hint::assert_unchecked(next_offset < N);
+            }
             next_ys_and_metadata[next_offset].write(compute_fn::<
                 K,
                 TABLE_NUMBER,
@@ -665,6 +736,12 @@ where
                 left_y, left_metadata, right_metadata
             ));
             next_offset += 1;
+        }
+
+        // SAFETY: Inputs are limited to `N * 2` elements above and at most one match is produced
+        // for every two of them
+        unsafe {
+            hint::assert_unchecked(next_offset <= N);
         }
 
         // SAFETY: Initialized `next_offset` elements

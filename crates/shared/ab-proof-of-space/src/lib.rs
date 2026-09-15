@@ -38,6 +38,8 @@ use ab_core_primitives::solutions::SolutionPotVerifier;
 use alloc::boxed::Box;
 #[cfg(feature = "alloc")]
 use core::fmt;
+#[cfg(feature = "alloc")]
+use core::hint;
 
 /// Proof of space table type
 #[derive(Debug, Clone, Copy)]
@@ -78,6 +80,12 @@ impl PosProofs {
     pub fn for_s_bucket(&self, s_bucket: SBucket) -> Option<PosProof> {
         let proof_index = Self::proof_index_for_s_bucket(&self.found_proofs, s_bucket)?;
 
+        // SAFETY: At most `Record::NUM_CHUNKS` bits of `found_proofs` are set, which is an
+        // invariant of this data structure, hence the index of any of them fits into `proofs`
+        unsafe {
+            hint::assert_unchecked(proof_index < Record::NUM_CHUNKS);
+        }
+
         Some(self.proofs[proof_index])
     }
 
@@ -86,6 +94,12 @@ impl PosProofs {
         found_proofs: &[u8; Record::NUM_S_BUCKETS / u8::BITS as usize],
         s_bucket: SBucket,
     ) -> Option<usize> {
+        // `s_bucket` is backed by `u16`, which is what makes all the offsets below statically
+        // within bounds of `found_proofs`
+        const {
+            assert!(Record::NUM_S_BUCKETS == usize::from(u16::MAX) + 1);
+        }
+
         let bits_offset = usize::from(s_bucket);
         let found_proofs_byte_offset = bits_offset / u8::BITS as usize;
         let found_proofs_bit_offset = bits_offset as u32 % u8::BITS;
