@@ -1,15 +1,19 @@
 use crate::build::enum_impl::enum_name_from_impl;
+use quote::ToTokens;
 use std::collections::hash_map::OccupiedError;
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::path::Path;
 use std::rc::Rc;
-use syn::{Ident, ItemEnum, ItemImpl, Variant};
+use syn::parse::{Parse, ParseStream};
+use syn::{Ident, ItemEnum, ItemImpl, Meta, Token, Variant};
 
 #[derive(Debug)]
 pub(super) struct KnownEnumDefinition {
     pub(super) own_instructions: Vec<Rc<Variant>>,
     pub(super) instructions: Vec<Rc<Variant>>,
+    /// Integer type the enum stores its discriminant in, `u8` or `u16`
+    pub(super) discriminant_type: Ident,
     pub(super) ignored_instructions: Rc<HashSet<Ident>>,
     pub(super) direct_dependencies: Rc<[Ident]>,
     pub(super) dependencies_for_enablement: HashSet<Rc<[Ident]>>,
@@ -127,6 +131,52 @@ impl State {
         dependencies_for_enablement: HashSet<Rc<[Ident]>>,
         source: Rc<Path>,
     ) -> anyhow::Result<()> {
+        // Threaded dispatch reads the discriminant out of an instruction to index its handler table
+        // with it. That needs a tag of a known integer type stored at the beginning of the value,
+        // and `u8` and `u16` are also the ones that widen to `usize` losslessly on every target.
+        let discriminant_type = item_enum
+            .attrs
+            .iter()
+            .filter(|attr| attr.path().is_ident("repr"))
+            .find_map(|attr| {
+                attr.parse_args_with(|input: ParseStream<'_>| {
+                    let nested = input.parse_terminated(Meta::parse, Token![,])?;
+                    Ok(nested.iter().find_map(|meta| {
+                        let ident = meta.path().get_ident()?;
+                        (ident == "u8" || ident == "u16").then(|| ident.clone())
+                    }))
+                })
+                .ok()
+                .flatten()
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Instruction enum `{}` must be `#[repr(u8)]` or `#[repr(u16)]` for threaded \
+                    dispatch to index its handler table with the discriminant, found: {}",
+                    item_enum.ident,
+                    item_enum
+                        .attrs
+                        .iter()
+                        .map(|attr| attr.to_token_stream().to_string())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                )
+            })?;
+
+        // The handler table is indexed without checking the discriminant against its length,
+        // which only holds while discriminants are the implicit `0..variants`
+        if let Some(variant) = item_enum
+            .variants
+            .iter()
+            .find(|variant| variant.discriminant.is_some())
+        {
+            return Err(anyhow::anyhow!(
+                "Instruction `{}::{}` must not specify an explicit discriminant",
+                item_enum.ident,
+                variant.ident
+            ));
+        }
+
         let known_enum_definition = KnownEnumDefinition {
             own_instructions: original_item_enum
                 .variants
@@ -134,6 +184,7 @@ impl State {
                 .map(Rc::new)
                 .collect(),
             instructions: item_enum.variants.into_iter().map(Rc::new).collect(),
+            discriminant_type,
             ignored_instructions: Rc::new(ignored_instructions),
             direct_dependencies,
             dependencies_for_enablement,

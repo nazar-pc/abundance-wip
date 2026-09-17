@@ -255,3 +255,79 @@ fn decoding_impl_dead_code_allow() {
         assert_eq!(code.contains("dead_code"), expected, "{code}");
     }
 }
+
+// TODO: Not supported on Miri on Windows yet: https://github.com/rust-lang/miri/issues/3482
+#[cfg(not(all(miri, target_os = "windows")))]
+#[test]
+fn enum_discriminant_type() {
+    let out_dir = tempfile::tempdir().unwrap();
+    let out_dir = out_dir.path();
+    let mut state = State::new();
+
+    let enums: [(ItemEnum, &str); 3] = [
+        (
+            parse_quote! {
+                #[instruction]
+                enum A { X, Y }
+            },
+            "u16",
+        ),
+        (
+            parse_quote! {
+                #[instruction]
+                #[repr(u8)]
+                enum B { X, Y }
+            },
+            "u8",
+        ),
+        (
+            parse_quote! {
+                #[instruction]
+                #[repr(align(8), u16)]
+                enum C { X, Y }
+            },
+            "u16",
+        ),
+    ];
+    for (item_enum, expected) in enums {
+        let enum_name = item_enum.ident.clone();
+        process_enum_definition(item_enum, out_dir, &mut state).unwrap();
+        let discriminant_type = &state
+            .get_known_enum_definition(&enum_name)
+            .unwrap()
+            .discriminant_type;
+        assert_eq!(discriminant_type, expected, "{enum_name}");
+    }
+}
+
+// TODO: Not supported on Miri on Windows yet: https://github.com/rust-lang/miri/issues/3482
+#[cfg(not(all(miri, target_os = "windows")))]
+#[test]
+fn enum_discriminant_rejected() {
+    let out_dir = tempfile::tempdir().unwrap();
+    let out_dir = out_dir.path();
+
+    let enums: [(ItemEnum, &str); 2] = [
+        (
+            parse_quote! {
+                #[instruction]
+                #[repr(C)]
+                enum A { X, Y }
+            },
+            "must be `#[repr(u8)]` or `#[repr(u16)]`",
+        ),
+        (
+            parse_quote! {
+                #[instruction]
+                enum B { X = 1, Y }
+            },
+            "must not specify an explicit discriminant",
+        ),
+    ];
+    for (item_enum, expected) in enums {
+        let error = process_enum_definition(item_enum, out_dir, &mut State::new())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{error}");
+    }
+}

@@ -10,11 +10,15 @@ Breaking changes:
 * Enums in `if` conditions are satisfied when implemented (see `Instruction::IMPLEMENTED_EXTENSIONS`) rather than when
   all of their instructions are present
 * `#[instruction]` and `#[instruction_execution]` on implementations reject arguments, which previously had no effect
+* Instruction enums must be `#[repr(u8)]` or `#[repr(u16)]` (`#[repr(u16)]` is still added when no tag type is pinned)
+  and must not specify explicit discriminants
 
 Improvements:
 
 * Support instruction macros in non-src directories (tests, examples, etc.)
 * Compose `Instruction::size()` into one flat deduplicated `match`
+* Threaded dispatch loads the next handler from a table instead of selecting it with a `match`, which with PGO LLVM
+  compiles into two indirect jumps per dispatch and replicates at every dispatch site
 
 Fixes:
 
