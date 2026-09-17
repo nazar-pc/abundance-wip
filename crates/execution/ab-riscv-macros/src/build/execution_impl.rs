@@ -781,6 +781,7 @@ pub(super) fn process_enum_execution_impl(
         &item_impl.self_ty,
         &item_impl.generics,
         &enum_definition.instructions,
+        &enum_definition.discriminant_type,
         &match_arms,
     )?;
 

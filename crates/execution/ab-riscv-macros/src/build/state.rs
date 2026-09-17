@@ -1,4 +1,5 @@
 use crate::build::enum_impl::enum_name_from_impl;
+use crate::build::shared::enum_discriminant_type;
 use std::collections::hash_map::OccupiedError;
 use std::collections::{HashMap, HashSet};
 use std::mem;
@@ -10,6 +11,9 @@ use syn::{Ident, ItemEnum, ItemImpl, Variant};
 pub(super) struct KnownEnumDefinition {
     pub(super) own_instructions: Vec<Rc<Variant>>,
     pub(super) instructions: Vec<Rc<Variant>>,
+    /// Integer type the enum stores its discriminant in, see
+    /// [`enum_discriminant_type()`](crate::build::shared::enum_discriminant_type)
+    pub(super) discriminant_type: Ident,
     pub(super) ignored_instructions: Rc<HashSet<Ident>>,
     pub(super) direct_dependencies: Rc<[Ident]>,
     pub(super) dependencies_for_enablement: HashSet<Rc<[Ident]>>,
@@ -127,6 +131,23 @@ impl State {
         dependencies_for_enablement: HashSet<Rc<[Ident]>>,
         source: Rc<Path>,
     ) -> anyhow::Result<()> {
+        let discriminant_type = enum_discriminant_type(&item_enum)?;
+
+        // Threaded dispatch indexes the handler table with the discriminant without checking it
+        // against the table length, which only holds while the discriminants are the implicit
+        // `0..variants`
+        if let Some(variant) = item_enum
+            .variants
+            .iter()
+            .find(|variant| variant.discriminant.is_some())
+        {
+            return Err(anyhow::anyhow!(
+                "Instruction `{}::{}` must not specify an explicit discriminant",
+                item_enum.ident,
+                variant.ident
+            ));
+        }
+
         let known_enum_definition = KnownEnumDefinition {
             own_instructions: original_item_enum
                 .variants
@@ -134,6 +155,7 @@ impl State {
                 .map(Rc::new)
                 .collect(),
             instructions: item_enum.variants.into_iter().map(Rc::new).collect(),
+            discriminant_type,
             ignored_instructions: Rc::new(ignored_instructions),
             direct_dependencies,
             dependencies_for_enablement,

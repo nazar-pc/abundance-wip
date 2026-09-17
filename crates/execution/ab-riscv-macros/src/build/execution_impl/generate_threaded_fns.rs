@@ -86,6 +86,7 @@ pub(super) fn generate_threaded_fns(
     self_ty: &Type,
     generics: &Generics,
     variants: &[Rc<Variant>],
+    discriminant_type: &Ident,
     match_arms: &[Arm],
 ) -> anyhow::Result<Vec<Item>> {
     let generic_params = &generics.params;
@@ -93,12 +94,13 @@ pub(super) fn generate_threaded_fns(
     let (abi, target_feature) = handler_abi()?;
     let enum_snake_case = enum_name.to_string().to_snake_case();
     let dispatch_fn_name = format_ident!("dispatch_{enum_snake_case}");
+    let handler_fn_name = format_ident!("{enum_snake_case}_threaded_handler");
     let entry_fn_name = format_ident!("execute_{enum_snake_case}_threaded");
     let dispatch_result_name = format_ident!("{enum_name}ThreadedDispatchResult");
     let branch_failed_fn_name = format_ident!("{enum_snake_case}_threaded_branch_failed");
 
-    let mut generated_items = Vec::with_capacity(variants.len() + 3);
-    let mut dispatch_arms = Vec::with_capacity(variants.len());
+    let mut generated_items = Vec::with_capacity(variants.len() + 4);
+    let mut handlers = Vec::with_capacity(variants.len());
 
     // `FetchInstructionResult` with the handler that executes the fetched instruction attached, and
     // without the `Continue` variant, which dispatch resolves while fetching rather than passing
@@ -221,7 +223,7 @@ pub(super) fn generate_threaded_fns(
         let pat_fields = &pat_struct.fields;
 
         let variant_fn_name = variant_fn_name(enum_name, variant_ident);
-        let handler_fn_name = format_ident!("{variant_fn_name}_threaded");
+        let variant_handler_fn_name = format_ident!("{variant_fn_name}_threaded");
 
         let variant_call_args = pat_fields
             .iter()
@@ -244,7 +246,7 @@ pub(super) fn generate_threaded_fns(
             // Make sure each handler starts on a cache line boundary
             #[rustc_align(64)]
             #target_feature
-            unsafe #abi fn #handler_fn_name<#generic_params>(
+            unsafe #abi fn #variant_handler_fn_name<#generic_params>(
                 peeked_instruction: PC::Peeked,
                 mut instruction_fetcher: PC,
                 regs: &mut Regs,
@@ -425,10 +427,64 @@ pub(super) fn generate_threaded_fns(
             }
         });
 
-        dispatch_arms.push(quote! {
-            #enum_name::#variant_ident { .. } => #handler_fn_name::<#generic_params>,
+        handlers.push(quote! {
+            #variant_handler_fn_name::<#generic_params>,
         });
     }
+
+    // Selects the handler for an instruction by loading it from a table indexed with the
+    // discriminant.
+    //
+    // A load rather than a `match` over the variants, which is what this used to be. Without a
+    // profile the two are the same thing: LLVM lowers the `match` to a jump table and the
+    // generated code is instruction for instruction what the load produces. With one it is not,
+    // because a `switch` is something LLVM is free to lower again in terms of what the profile
+    // says is hot, while duplicating the handler it lands in. That multiplies the size of the
+    // threaded code several times over for an interpreter whose dispatch is unpredictable by
+    // construction, and an interpreter that no longer fits in the instruction cache is slower than
+    // the mispredictions it bought its way out of. A load offers nothing to specialize.
+    generated_items.push(parse_quote! {
+        #[expect(
+            clippy::undocumented_unsafe_blocks,
+            reason = "Comments will be stripped, this will suppress some of the lints that are \
+            caused by it"
+        )]
+        #[expect(clippy::allow_attributes, reason = "Attribute below")]
+        #[allow(
+            improper_ctypes_definitions,
+            reason = "Handlers only ever call each other, within this crate"
+        )]
+        #[inline(always)]
+        fn #handler_fn_name<#generic_params>(
+            instruction: &#self_ty,
+        ) -> unsafe #abi fn(
+            PC::Peeked,
+            PC,
+            &mut Regs,
+            Env,
+            &mut Memory,
+        ) -> OpaqueThreadedExecutionResult<#self_ty>
+            #where_clause
+        {
+            // SAFETY: The enum is `#[repr(#discriminant_type)]`, which stores the discriminant at
+            // the beginning of the value
+            let discriminant = unsafe {
+                *::core::ptr::from_ref(instruction).cast::<#discriminant_type>()
+            };
+
+            // The table is generic, so it cannot be a `static`, and a `const` item is not allowed
+            // to name the enclosing generic parameters either, which leaves an inline `const`
+            // block. It is still one read-only allocation shared by every place this function is
+            // inlined into, rather than something built on the stack on each dispatch.
+            //
+            // SAFETY: No instruction specifies an explicit discriminant, so the discriminant of
+            // any value of the enum is below the number of its variants, which is exactly the
+            // number of entries in the table
+            unsafe {
+                *const { &[ #( #handlers )* ] }.get_unchecked(usize::from(discriminant))
+            }
+        }
+    });
 
     generated_items.push(parse_quote! {
         #[expect(
@@ -477,21 +533,9 @@ pub(super) fn generate_threaded_fns(
                 }
             };
 
-            // TODO: Remove copy once fixed in LLVM:
-            //  https://github.com/llvm/llvm-project/issues/221426
-            // Matched as a copy rather than in place on purpose: the discriminant of an
-            // instruction read in place comes with its value range attached, which lets LLVM
-            // narrow the selection to a byte, and past 127 variants the byte values it then
-            // sorts by are negative, so every dispatch pays an extra instruction to offset the
-            // index into the jump table. A copy carries no such range and is selected on as is.
-            let instruction_copy = *instruction_fetcher.peeked_instruction(&instruction);
-            #[expect(
-                clippy::rest_pattern_accessible_field,
-                reason = "Dispatch selects a handler by variant and never looks at any field"
-            )]
-            let handler = match instruction_copy {
-                #( #dispatch_arms )*
-            };
+            let handler = #handler_fn_name::<#generic_params>(
+                instruction_fetcher.peeked_instruction(&instruction),
+            );
 
             #dispatch_result_name::Next { instruction, handler }
         }
