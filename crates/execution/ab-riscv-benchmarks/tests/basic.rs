@@ -26,6 +26,37 @@ enum RunType {
     Lazy,
     Eager,
     EagerThreaded,
+    EagerFused,
+    EagerThreadedFused,
+}
+
+/// Decode the instructions of a contract, with or without fusing pairs of them
+///
+/// # Safety
+/// Same as [`BasicEagerInstructions::decode()`]
+unsafe fn decode(
+    fused: bool,
+    instructions: &[u8],
+    fallback: ContractInstruction,
+    return_trap_address: u64,
+    base_addr: u64,
+) -> BasicEagerInstructions<ContractInstruction> {
+    if fused {
+        // SAFETY: Guaranteed by function contract
+        unsafe {
+            BasicEagerInstructions::decode_fused(
+                instructions,
+                fallback,
+                return_trap_address,
+                base_addr,
+            )
+        }
+    } else {
+        // SAFETY: Guaranteed by function contract
+        unsafe {
+            BasicEagerInstructions::decode(instructions, fallback, return_trap_address, base_addr)
+        }
+    }
 }
 
 fn call_method<IA, CIA>(method_name: &str, create_internal_args: CIA, run_type: RunType) -> IA
@@ -104,10 +135,11 @@ where
 
             state.memory
         }
-        RunType::Eager => {
+        RunType::Eager | RunType::EagerFused => {
             // SAFETY: Contract code is trusted
             let instructions = unsafe {
-                BasicEagerInstructions::decode(
+                decode(
+                    matches!(run_type, RunType::EagerFused),
                     contract_file.get_code(),
                     UNDECODABLE_INSTRUCTION,
                     TRAP_ADDRESS,
@@ -128,10 +160,11 @@ where
 
             state.memory
         }
-        RunType::EagerThreaded => {
+        RunType::EagerThreaded | RunType::EagerThreadedFused => {
             // SAFETY: Contract code is trusted
             let instructions = unsafe {
-                BasicEagerInstructions::decode(
+                decode(
+                    matches!(run_type, RunType::EagerThreadedFused),
                     contract_file.get_code(),
                     UNDECODABLE_INSTRUCTION,
                     TRAP_ADDRESS,
@@ -355,6 +388,134 @@ fn ed25519_verify_invalid_eager_threaded() {
             Ed25519VerifyInternalArgs::new(internal_args_addr, public_key, signature, other_message)
         },
         RunType::EagerThreaded,
+    );
+
+    assert!(!internal_args.result.get());
+}
+
+#[test]
+fn blake3_hash_chunk_eager_fused() {
+    let data_to_hash = [1; _];
+    let expected_hash = Benchmarks::blake3_hash_chunk(&data_to_hash);
+
+    let internal_args = call_method(
+        "benchmarks_blake3_hash_chunk",
+        |internal_args_addr| Blake3HashChunkInternalArgs::new(internal_args_addr, data_to_hash),
+        RunType::EagerFused,
+    );
+    let actual_hash = internal_args.result();
+
+    assert_eq!(expected_hash, actual_hash);
+}
+
+// TODO: Unlock if it becomes fast enough to run in CI
+#[cfg_attr(miri, ignore)]
+#[test]
+fn ed25519_verify_valid_eager_fused() {
+    let signing_key = SigningKey::from([1; _]);
+    let public_key = Ed25519PublicKey::from(signing_key.verifying_key());
+    let message = [2; OUT_LEN];
+    let signature = Ed25519Signature::from(signing_key.sign(&message));
+
+    assert!(Benchmarks::ed25519_verify(&public_key, &signature, &message).get());
+
+    let internal_args = call_method(
+        "benchmarks_ed25519_verify",
+        |internal_args_addr| {
+            Ed25519VerifyInternalArgs::new(internal_args_addr, public_key, signature, message)
+        },
+        RunType::EagerFused,
+    );
+
+    assert!(internal_args.result.get());
+}
+
+// TODO: Unlock if it becomes fast enough to run in CI
+#[cfg_attr(miri, ignore)]
+#[test]
+fn ed25519_verify_invalid_eager_fused() {
+    let signing_key = SigningKey::from([1; _]);
+    let public_key = Ed25519PublicKey::from(signing_key.verifying_key());
+    let message = [2; OUT_LEN];
+    let other_message = [3; OUT_LEN];
+    let signature = Ed25519Signature::from(signing_key.sign(&message));
+
+    assert!(!Benchmarks::ed25519_verify(&public_key, &signature, &other_message).get());
+
+    let internal_args = call_method(
+        "benchmarks_ed25519_verify",
+        |internal_args_addr| {
+            Ed25519VerifyInternalArgs::new(internal_args_addr, public_key, signature, other_message)
+        },
+        RunType::EagerFused,
+    );
+
+    assert!(!internal_args.result.get());
+}
+
+#[cfg_attr(
+    all(target_arch = "x86_64", not(target_feature = "avx")),
+    ignore = "AVX is not the default feature on x86-64"
+)]
+#[test]
+fn blake3_hash_chunk_eager_threaded_fused() {
+    let data_to_hash = [1; _];
+    let expected_hash = Benchmarks::blake3_hash_chunk(&data_to_hash);
+
+    let internal_args = call_method(
+        "benchmarks_blake3_hash_chunk",
+        |internal_args_addr| Blake3HashChunkInternalArgs::new(internal_args_addr, data_to_hash),
+        RunType::EagerThreadedFused,
+    );
+    let actual_hash = internal_args.result();
+
+    assert_eq!(expected_hash, actual_hash);
+}
+
+#[cfg_attr(
+    all(target_arch = "x86_64", not(target_feature = "avx")),
+    ignore = "AVX is not the default feature on x86-64"
+)]
+#[test]
+fn ed25519_verify_valid_eager_threaded_fused() {
+    let signing_key = SigningKey::from([1; _]);
+    let public_key = Ed25519PublicKey::from(signing_key.verifying_key());
+    let message = [2; OUT_LEN];
+    let signature = Ed25519Signature::from(signing_key.sign(&message));
+
+    assert!(Benchmarks::ed25519_verify(&public_key, &signature, &message).get());
+
+    let internal_args = call_method(
+        "benchmarks_ed25519_verify",
+        |internal_args_addr| {
+            Ed25519VerifyInternalArgs::new(internal_args_addr, public_key, signature, message)
+        },
+        RunType::EagerThreadedFused,
+    );
+
+    assert!(internal_args.result.get());
+}
+
+#[cfg_attr(
+    all(target_arch = "x86_64", not(target_feature = "avx")),
+    ignore = "AVX is not the default feature on x86-64"
+)]
+#[test]
+fn ed25519_verify_invalid_eager_threaded_fused() {
+    let signing_key = SigningKey::from([1; _]);
+    let public_key = Ed25519PublicKey::from(signing_key.verifying_key());
+    let message = [2; OUT_LEN];
+    let other_message = [3; OUT_LEN];
+    let signature = Ed25519Signature::from(signing_key.sign(&message));
+
+    assert!(!Benchmarks::ed25519_verify(&public_key, &signature, &other_message).get());
+
+    let internal_args = call_method(
+        "benchmarks_ed25519_verify",
+        |internal_args_addr| {
+            Ed25519VerifyInternalArgs::new(internal_args_addr, public_key, signature, other_message)
+        },
+        RunType::EagerThreadedFused,
     );
 
     assert!(!internal_args.result.get());

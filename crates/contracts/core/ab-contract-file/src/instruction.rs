@@ -219,6 +219,10 @@ const unsafe impl ZcmpRegister for ContractRegister {
         Rv64ZbcInstruction,
         Rv64ZknInstruction,
         ZicondInstruction,
+        Rv64FusedInstruction,
+        Rv64MFusedInstruction,
+        Rv64ZbaFusedInstruction,
+        Rv64ZcaFusedInstruction,
     ],
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,6 +242,14 @@ const impl<Reg> Instruction for ContractInstruction<Reg> {
     #[inline(always)]
     fn size(&self) -> u8 {
         size_of::<u32>() as u8
+    }
+}
+
+#[instruction]
+const impl<Reg> FusedInstruction for ContractInstruction<Reg> {
+    #[inline(always)]
+    fn fuse(prev: Self, next: Self) -> (Self, Self) {
+        (prev, next)
     }
 }
 

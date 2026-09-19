@@ -90,6 +90,21 @@ fn criterion_benchmark(c: &mut Criterion) {
                 black_box(instructions);
             });
         });
+        group.bench_function("decode-instructions/fused", |b| {
+            b.iter(|| {
+                // SAFETY: All instructions are valid and contract ends with a jump
+                let instructions = unsafe {
+                    BasicEagerInstructions::decode_fused(
+                        code,
+                        UNDECODABLE_INSTRUCTION,
+                        TRAP_ADDRESS,
+                        MEMORY_BASE_ADDRESS
+                            + u64::from(contract_file.header().read_only_section_memory_size),
+                    )
+                };
+                black_box(instructions);
+            });
+        });
     }
 
     let mut memory = BasicMemory::<MEMORY_BASE_ADDRESS, MEMORY_SIZE>::default();
@@ -136,6 +151,19 @@ fn criterion_benchmark(c: &mut Criterion) {
         )
     };
 
+    // The very same instructions with pairs of them fused, which is what the `fused` benchmarks
+    // below walk
+    //
+    // SAFETY: All instructions are valid and contract ends with a jump
+    let fused_instructions = unsafe {
+        BasicEagerInstructions::decode_fused(
+            contract_file.get_code(),
+            UNDECODABLE_INSTRUCTION,
+            TRAP_ADDRESS,
+            MEMORY_BASE_ADDRESS + u64::from(contract_file.header().read_only_section_memory_size),
+        )
+    };
+
     let mut eager_state = BasicInterpreterState {
         regs: ContractRegisters::<false>::default(),
         env: IllegalEcallSystemInstructionHandler,
@@ -150,6 +178,26 @@ fn criterion_benchmark(c: &mut Criterion) {
         memory,
         // SAFETY: Program counter is set later to the correct address
         instruction_fetcher: unsafe { instructions.fetcher(benchmarks_blake3_hash_chunk_addr) },
+    };
+
+    let mut fused_eager_state = BasicInterpreterState {
+        regs: ContractRegisters::<false>::default(),
+        env: IllegalEcallSystemInstructionHandler,
+        memory,
+        // SAFETY: Program counter is set later to the correct address
+        instruction_fetcher: unsafe {
+            fused_instructions.fetcher(benchmarks_blake3_hash_chunk_addr)
+        },
+    };
+
+    let mut fused_eager_state_zerostore = BasicInterpreterState {
+        regs: ContractRegisters::<true>::default(),
+        env: IllegalEcallSystemInstructionHandler,
+        memory,
+        // SAFETY: Program counter is set later to the correct address
+        instruction_fetcher: unsafe {
+            fused_instructions.fetcher(benchmarks_blake3_hash_chunk_addr)
+        },
     };
 
     {
@@ -185,6 +233,16 @@ fn criterion_benchmark(c: &mut Criterion) {
                 .unwrap()
                 .copy_from_slice(internal_args_bytes);
             eager_state_zerostore
+                .memory
+                .get_mut_bytes(internal_args_addr, size_of::<Blake3HashChunkInternalArgs>())
+                .unwrap()
+                .copy_from_slice(internal_args_bytes);
+            fused_eager_state
+                .memory
+                .get_mut_bytes(internal_args_addr, size_of::<Blake3HashChunkInternalArgs>())
+                .unwrap()
+                .copy_from_slice(internal_args_bytes);
+            fused_eager_state_zerostore
                 .memory
                 .get_mut_bytes(internal_args_addr, size_of::<Blake3HashChunkInternalArgs>())
                 .unwrap()
@@ -253,6 +311,55 @@ fn criterion_benchmark(c: &mut Criterion) {
                 .unwrap();
             });
         });
+
+        group.bench_function("interpreter/loop/eager-fused", |b| {
+            b.iter(|| {
+                fused_eager_state
+                    .instruction_fetcher
+                    .set_pc(&fused_eager_state.memory, benchmarks_blake3_hash_chunk_addr)
+                    .unwrap()
+                    .continue_value()
+                    .unwrap();
+                fused_eager_state
+                    .regs
+                    .write(Register::A0, internal_args_addr);
+                // Stack is between internal arguments and contract memory
+                fused_eager_state.regs.write(Register::SP, stack_pointer);
+
+                black_box(black_box(&mut fused_eager_state).execute()).unwrap();
+            });
+        });
+
+        group.bench_function("interpreter/threaded/eager-fused", |b| {
+            b.iter(|| {
+                fused_eager_state_zerostore
+                    .instruction_fetcher
+                    .set_pc(
+                        &fused_eager_state_zerostore.memory,
+                        benchmarks_blake3_hash_chunk_addr,
+                    )
+                    .unwrap()
+                    .continue_value()
+                    .unwrap();
+                fused_eager_state_zerostore
+                    .regs
+                    .write(Register::A0, internal_args_addr);
+                // Stack is between internal arguments and contract memory
+                fused_eager_state_zerostore
+                    .regs
+                    .write(Register::SP, stack_pointer);
+
+                let state = black_box(&mut fused_eager_state_zerostore);
+                ContractInstruction::execute_threaded(
+                    state.instruction_fetcher,
+                    &mut state.regs,
+                    IllegalEcallSystemInstructionHandler,
+                    &mut state.memory,
+                )
+                .outcome
+                .unwrap();
+            });
+        });
     }
     {
         let mut group = c.benchmark_group("ed25519_verify");
@@ -295,6 +402,16 @@ fn criterion_benchmark(c: &mut Criterion) {
                 .unwrap()
                 .copy_from_slice(internal_args_bytes);
             eager_state_zerostore
+                .memory
+                .get_mut_bytes(internal_args_addr, size_of::<Ed25519VerifyInternalArgs>())
+                .unwrap()
+                .copy_from_slice(internal_args_bytes);
+            fused_eager_state
+                .memory
+                .get_mut_bytes(internal_args_addr, size_of::<Ed25519VerifyInternalArgs>())
+                .unwrap()
+                .copy_from_slice(internal_args_bytes);
+            fused_eager_state_zerostore
                 .memory
                 .get_mut_bytes(internal_args_addr, size_of::<Ed25519VerifyInternalArgs>())
                 .unwrap()
@@ -353,6 +470,55 @@ fn criterion_benchmark(c: &mut Criterion) {
                     .write(Register::SP, stack_pointer);
 
                 let state = black_box(&mut eager_state_zerostore);
+                ContractInstruction::execute_threaded(
+                    state.instruction_fetcher,
+                    &mut state.regs,
+                    IllegalEcallSystemInstructionHandler,
+                    &mut state.memory,
+                )
+                .outcome
+                .unwrap();
+            });
+        });
+
+        group.bench_function("interpreter/loop/eager-fused", |b| {
+            b.iter(|| {
+                fused_eager_state
+                    .instruction_fetcher
+                    .set_pc(&fused_eager_state.memory, benchmarks_ed25519_verify_addr)
+                    .unwrap()
+                    .continue_value()
+                    .unwrap();
+                fused_eager_state
+                    .regs
+                    .write(Register::A0, internal_args_addr);
+                // Stack is between internal arguments and contract memory
+                fused_eager_state.regs.write(Register::SP, stack_pointer);
+
+                black_box(black_box(&mut fused_eager_state).execute()).unwrap();
+            });
+        });
+
+        group.bench_function("interpreter/threaded/eager-fused", |b| {
+            b.iter(|| {
+                fused_eager_state_zerostore
+                    .instruction_fetcher
+                    .set_pc(
+                        &fused_eager_state_zerostore.memory,
+                        benchmarks_ed25519_verify_addr,
+                    )
+                    .unwrap()
+                    .continue_value()
+                    .unwrap();
+                fused_eager_state_zerostore
+                    .regs
+                    .write(Register::A0, internal_args_addr);
+                // Stack is between internal arguments and contract memory
+                fused_eager_state_zerostore
+                    .regs
+                    .write(Register::SP, stack_pointer);
+
+                let state = black_box(&mut fused_eager_state_zerostore);
                 ContractInstruction::execute_threaded(
                     state.instruction_fetcher,
                     &mut state.regs,
