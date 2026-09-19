@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests;
 
+use crate::fused::FusedInstruction;
 use crate::{
     Address, ExecutionError, FetchInstructionResult, InstructionFetcher, PackedAddress,
     ProgramCounter, VirtualMemory, VirtualMemoryError,
@@ -293,6 +294,86 @@ where
         }
 
         instance
+    }
+
+    /// [`Self::decode()`] followed by a fusion pass over the decoded instructions.
+    ///
+    /// Fusion replaces pairs of adjacent instructions with single instructions that do the work of
+    /// both, see [`fused`](crate::fused) module documentation. It is done here, once, rather than
+    /// during execution, which is what makes it free at run time.
+    ///
+    /// The second instruction of every fused pair stays in its own slot, so an address that lands
+    /// on it is still an instruction to execute and everything that walks the decoded stream slot
+    /// by slot sees exactly what it did before.
+    ///
+    /// # Safety
+    /// Same as [`Self::decode()`]
+    pub unsafe fn decode_fused(
+        instructions: &[u8],
+        fallback: I,
+        return_trap_address: Address<I>,
+        base_addr: Address<I>,
+    ) -> Self
+    where
+        I: FusedInstruction,
+    {
+        // SAFETY: Guaranteed by function contract
+        let mut instance =
+            unsafe { Self::decode(instructions, fallback, return_trap_address, base_addr) };
+
+        instance.fuse();
+
+        instance
+    }
+
+    /// Fuse pairs of adjacent instructions of an already decoded stream.
+    ///
+    /// The pass walks the stream the way execution does: from the first instruction, stepping by
+    /// the size of the instruction it is on, so that it only ever looks at pairs that really are
+    /// adjacent instructions. Guest code that isn't reachable as instructions at all can throw the
+    /// walk off an instruction boundary, which costs nothing: a pair of slots that is not a pair
+    /// of instructions is also not something execution can reach, and once the walk is back on an
+    /// instruction, the slot that instruction's own size points at is the instruction that follows
+    /// it, whatever came before.
+    fn fuse(&mut self)
+    where
+        I: FusedInstruction,
+    {
+        let instructions = self.instructions();
+        let instructions_len = self.instructions_len();
+
+        if instructions_len == 0 {
+            return;
+        }
+
+        let mut slot_index = 0;
+        loop {
+            // SAFETY: Position is within bounds, checked below for every iteration but the first,
+            // where the stream is known to be non-empty
+            let prev = unsafe { instructions.add(slot_index).read() };
+
+            // An instruction is never smaller than the alignment it starts on, so this always
+            // moves forward; the lower bound only keeps an instruction set that claims otherwise
+            // from looping here forever
+            let step = (usize::from(prev.size()) / Self::GUEST_BYTES_PER_SLOT).max(1);
+            let next_slot_index = slot_index + step;
+            if next_slot_index >= instructions_len {
+                break;
+            }
+
+            // SAFETY: Position was just checked to be within bounds
+            let next = unsafe { instructions.add(next_slot_index).read() };
+
+            let (prev, next) = I::fuse(prev, next);
+
+            // SAFETY: Both positions are within bounds as established above
+            unsafe {
+                instructions.add(slot_index).write(prev);
+                instructions.add(next_slot_index).write(next);
+            }
+
+            slot_index = next_slot_index;
+        }
     }
 
     /// Decode the instruction that the decoded stream's slot starting `offset` bytes into

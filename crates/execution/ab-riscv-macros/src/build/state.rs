@@ -64,6 +64,17 @@ pub(super) struct PendingEnumExecutionImpl {
     pub(super) original_item_impl: ItemImpl,
 }
 
+#[derive(Debug)]
+pub(super) struct KnownOriginalEnumFusedImpl {
+    pub(super) item_impl: ItemImpl,
+    pub(super) source: Rc<Path>,
+}
+
+#[derive(Debug)]
+pub(super) struct PendingEnumFusedImpl {
+    pub(super) original_item_impl: ItemImpl,
+}
+
 pub(super) struct State {
     known_enum_definitions: HashMap<Ident, KnownEnumDefinition>,
     pending_enum_definitions: Vec<PendingEnumDefinition>,
@@ -75,6 +86,8 @@ pub(super) struct State {
     pending_enum_csr_impls: Vec<PendingEnumCsrImpl>,
     known_original_enum_execution_impls: HashMap<Ident, KnownOriginalEnumExecutionImpl>,
     pending_enum_execution_impls: Vec<PendingEnumExecutionImpl>,
+    known_original_enum_fused_impls: HashMap<Ident, KnownOriginalEnumFusedImpl>,
+    pending_enum_fused_impls: Vec<PendingEnumFusedImpl>,
 }
 
 impl State {
@@ -90,6 +103,8 @@ impl State {
             pending_enum_csr_impls: Vec::new(),
             known_original_enum_execution_impls: HashMap::new(),
             pending_enum_execution_impls: Vec::new(),
+            known_original_enum_fused_impls: HashMap::new(),
+            pending_enum_fused_impls: Vec::new(),
         }
     }
 
@@ -116,6 +131,13 @@ impl State {
         enum_name: &Ident,
     ) -> Option<&KnownOriginalEnumExecutionImpl> {
         self.known_original_enum_execution_impls.get(enum_name)
+    }
+
+    pub(super) fn get_known_original_enum_fused_impl(
+        &self,
+        enum_name: &Ident,
+    ) -> Option<&KnownOriginalEnumFusedImpl> {
+        self.known_original_enum_fused_impls.get(enum_name)
     }
 
     pub(super) fn insert_known_enum_definition(
@@ -255,6 +277,37 @@ impl State {
         Ok(())
     }
 
+    pub(super) fn insert_known_original_enum_fused_impl(
+        &mut self,
+        item_impl: ItemImpl,
+        source: Rc<Path>,
+    ) -> anyhow::Result<()> {
+        let enum_name = enum_name_from_impl(&item_impl);
+
+        if let Err(OccupiedError {
+            entry,
+            key: enum_name,
+            value,
+            ..
+        }) = self.known_original_enum_fused_impls.try_insert(
+            enum_name,
+            KnownOriginalEnumFusedImpl {
+                item_impl,
+                source: Rc::clone(&source),
+            },
+        ) && entry.get().item_impl != value.item_impl
+        {
+            return Err(anyhow::anyhow!(
+                "Fused implementation for enum `{enum_name}` is already defined in `{}`, a \
+                different duplicate found in `{}`",
+                entry.get().source.display(),
+                source.display(),
+            ));
+        }
+
+        Ok(())
+    }
+
     pub(super) fn add_pending_enum_definition(
         &mut self,
         pending_enum_definition: PendingEnumDefinition,
@@ -316,5 +369,16 @@ impl State {
 
     pub(super) fn take_pending_enum_execution_impls(&mut self) -> Vec<PendingEnumExecutionImpl> {
         mem::take(&mut self.pending_enum_execution_impls)
+    }
+
+    pub(super) fn add_pending_enum_fused_impl(
+        &mut self,
+        pending_enum_fused_impl: PendingEnumFusedImpl,
+    ) {
+        self.pending_enum_fused_impls.push(pending_enum_fused_impl);
+    }
+
+    pub(super) fn take_pending_enum_fused_impls(&mut self) -> Vec<PendingEnumFusedImpl> {
+        mem::take(&mut self.pending_enum_fused_impls)
     }
 }

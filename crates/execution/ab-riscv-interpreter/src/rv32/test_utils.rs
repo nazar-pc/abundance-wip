@@ -13,6 +13,7 @@ use crate::{
 use ab_riscv_primitives::prelude::*;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::iter;
 use core::ops::ControlFlow;
 
 pub(crate) const TEST_BASE_ADDR: u32 = 0x1000;
@@ -260,18 +261,18 @@ impl<I> TestInstructionFetcher<I> {
             instructions: instructions
                 .into_iter()
                 .flat_map(|instruction| {
-                    let maybe_second = match instruction.size() {
-                        2 => None,
-                        4 => {
-                            // Intentionally trigger illegal instruction on the second half-word
-                            Some(None)
-                        }
-                        instruction_size => {
-                            panic!("Unexpected instruction size {instruction_size}");
-                        }
-                    };
+                    let instruction_size = usize::from(instruction.size());
+                    assert!(
+                        instruction_size.is_multiple_of(size_of::<u16>()),
+                        "Unexpected instruction size {instruction_size}"
+                    );
 
-                    [Some(instruction)].into_iter().chain(maybe_second)
+                    // Intentionally trigger illegal instruction on every half-word but the first,
+                    // which a fused instruction has more than one of
+                    [Some(instruction)].into_iter().chain(iter::repeat_n(
+                        None,
+                        instruction_size / size_of::<u16>() - 1,
+                    ))
                 })
                 .collect(),
             return_trap_address,

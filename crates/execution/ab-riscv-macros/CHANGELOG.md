@@ -6,6 +6,11 @@ Breaking changes:
   method
 * Execution changes mirror API changes in `ab-riscv-interpreter`
 
+New features:
+
+* `#[instruction_execution]` supports `FusedInstruction` implementations, composing the `fuse()` method out of the arms
+  of the instruction sets an instruction set is composed of
+
 Improvements:
 
 * Support instruction macros in non-src directories (tests, examples, etc.)

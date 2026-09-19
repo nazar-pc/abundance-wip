@@ -9,8 +9,9 @@ use crate::build::enum_definition::{
     process_pending_enum_definitions,
 };
 use crate::build::enum_impl::{
-    collect_original_enum_decoding_impls_from_dependencies, process_enum_impl,
-    process_pending_enum_impls,
+    collect_original_enum_decoding_impls_from_dependencies,
+    collect_original_enum_fused_impls_from_dependencies, process_enum_impl,
+    process_pending_enum_fused_impls, process_pending_enum_impls,
 };
 use crate::build::execution_impl::{
     collect_enum_csr_impls_from_dependencies,
@@ -70,6 +71,10 @@ pub fn process_instruction_macros() -> anyhow::Result<()> {
         let (item_impl, source) = maybe_enum_execution_impl?;
         state.insert_known_original_enum_execution_impl(item_impl, source)?;
     }
+    for maybe_enum_fused_impl in collect_original_enum_fused_impls_from_dependencies() {
+        let (item_impl, source) = maybe_enum_fused_impl?;
+        state.insert_known_original_enum_fused_impl(item_impl, source)?;
+    }
 
     for maybe_rust_file in rust_files_in(PathBuf::from(&manifest_dir)) {
         let rust_file = maybe_rust_file.context("Failed to collect Rust files")?;
@@ -79,6 +84,7 @@ pub fn process_instruction_macros() -> anyhow::Result<()> {
 
     process_pending_enum_definitions(out_dir, &mut state)?;
     process_pending_enum_impls(out_dir, &mut state)?;
+    process_pending_enum_fused_impls(out_dir, &mut state)?;
     process_pending_enum_execution_impls(out_dir, &mut state)
 }
 
