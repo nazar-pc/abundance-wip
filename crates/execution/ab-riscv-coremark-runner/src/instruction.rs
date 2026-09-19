@@ -15,6 +15,10 @@ type CoremarkRegister = Reg<u64>;
         Rv64BInstruction,
         Rv64ZcaInstruction,
         TimeCsrInstruction,
+        Rv64FusedInstruction,
+        Rv64MFusedInstruction,
+        Rv64ZbaFusedInstruction,
+        Rv64ZcaFusedInstruction,
     ],
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +38,14 @@ const impl<Reg> Instruction for CoremarkInstruction<Reg> {
     #[inline(always)]
     fn size(&self) -> u8 {
         size_of::<u32>() as u8
+    }
+}
+
+#[instruction]
+impl<Reg> FusedInstruction for CoremarkInstruction<Reg> {
+    #[inline(always)]
+    fn fuse(prev: Self, next: Self) -> (Self, Self) {
+        (prev, next)
     }
 }
 

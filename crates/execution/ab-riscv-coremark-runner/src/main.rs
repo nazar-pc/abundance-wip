@@ -20,6 +20,7 @@ use ab_riscv_interpreter::basic::{BasicEagerInstructions, BasicMemory, BasicRegi
 use ab_riscv_interpreter::prelude::*;
 use ab_riscv_primitives::prelude::*;
 use anyhow::Context;
+use std::env;
 use std::ffi::CStr;
 
 /// Coremark ELF binary compiled by build.rs for the RISC-V guest
@@ -48,7 +49,45 @@ where
     CStr::from_bytes_until_nul(slice).ok()?.to_str().ok()
 }
 
+/// Report how many pairs of the program's instructions fuse, which is what decides whether fusion
+/// can do anything for it at all
+fn print_fusion_stats(text_data: &[u8]) {
+    let mut instructions = Vec::<CoremarkInstruction>::new();
+    let mut offset = 0;
+    while offset < text_data.len() {
+        let word = match text_data.get(offset..) {
+            Some([byte_0, byte_1, byte_2, byte_3, ..]) => {
+                u32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3])
+            }
+            Some([byte_0, byte_1, ..]) => u32::from_le_bytes([*byte_0, *byte_1, 0, 0]),
+            _ => break,
+        };
+        match <CoremarkInstruction as Instruction>::try_decode(word) {
+            Some(instruction) => {
+                instructions.push(instruction);
+                offset += usize::from(instruction.size());
+            }
+            None => {
+                offset += usize::from(<CoremarkInstruction as Instruction>::ALIGNMENT);
+            }
+        }
+    }
+
+    let fused = instructions
+        .windows(2)
+        .filter(|pair| CoremarkInstruction::fuse(pair[0], pair[1]).0 != pair[0])
+        .count();
+
+    println!(
+        "Instructions: {}, of which fused pairs: {fused} ({:.2}%)",
+        instructions.len(),
+        fused as f64 * 100.0 / instructions.len() as f64
+    );
+}
+
 fn main() -> anyhow::Result<()> {
+    let fusion = env::var("COREMARK_FUSION").is_ok_and(|value| value != "0");
+
     if COREMARK_ELF.is_empty() {
         return Err(anyhow::anyhow!(
             "Coremark ELF not found, install `riscv64-unknown-elf-gcc` and/or specify `RISCV_CC` \
@@ -77,6 +116,9 @@ fn main() -> anyhow::Result<()> {
         .write::<u64>(argv_addr, output_buf_addr)
         .context("argv slot does not fit in guest memory")?;
 
+    println!("Instruction fusion: {}", if fusion { "on" } else { "off" });
+    print_fusion_stats(text_data);
+
     let host_start = std::time::Instant::now();
 
     let mut regs = BasicRegisters::<_, true>::default();
@@ -86,18 +128,18 @@ fn main() -> anyhow::Result<()> {
     regs.write(Reg::A0, 1);
     regs.write(Reg::A1, argv_addr);
 
+    let fallback = CoremarkInstruction::Unimp {
+        rs1: Reg::ZERO,
+        rs2: Reg::ZERO,
+    };
     // SAFETY: ELF was produced by a trusted compiler, `.text` section is loaded at `text_addr`
     // and ends with a jump, and the trap address is outside of it
     let instructions = unsafe {
-        BasicEagerInstructions::decode(
-            text_data,
-            CoremarkInstruction::Unimp {
-                rs1: Reg::ZERO,
-                rs2: Reg::ZERO,
-            },
-            TRAP_ADDRESS,
-            text_addr,
-        )
+        if fusion {
+            BasicEagerInstructions::decode_fused(text_data, fallback, TRAP_ADDRESS, text_addr)
+        } else {
+            BasicEagerInstructions::decode(text_data, fallback, TRAP_ADDRESS, text_addr)
+        }
     };
     // SAFETY: `entry_point` is valid and aligned
     let instruction_fetcher = unsafe { instructions.fetcher(entry_point) };
