@@ -4,6 +4,7 @@ pub mod m;
 #[cfg(test)]
 mod tests;
 pub mod zba;
+pub mod zbb;
 pub mod zca;
 
 use crate::fused::{FusedInstruction, fused_helpers};
@@ -26,10 +27,19 @@ use core::ops::ControlFlow;
 /// `auipc-addi`, `auipc-load`, `lui-addi`, `lui-load`, `logic-reg-reg`, `logic-reg-imm`,
 /// `logic-imm-reg`, `zexth`, `bfext` and `shift-bit-extract`.
 ///
+/// `addi` + `addi` is not one of them, and no hardware implements it either. It is here because it
+/// is what the code actually contains: a pair of address computations whose first result dies
+/// immediately is among the most frequent such pairs, and folding the two immediates together
+/// costs an interpreter nothing.
+///
 /// See [module-level documentation](super) for what fusion is and when a pair may be fused.
 #[instruction(inherit = [Rv32Instruction])]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rv32FusedInstruction<Reg> {
+    // `addi` + `addi`
+    #[instruction(if = [Addi, Addi])]
+    FusedAddiAddi { rd: Reg, rs1: Reg, imm: i16 },
+
     // `addi` + load
     #[instruction(if = [Addi, Lb])]
     FusedAddiLb { rd: Reg, rs1: Reg, imm: i16 },
@@ -390,6 +400,34 @@ where
     #[cfg_attr(feature = "no-panic", no_panic_const::no_panic(const))]
     fn fuse(prev: Self, next: Self) -> (Self, Self) {
         match (prev, next) {
+            // `addi` + `addi`
+            (
+                Self::Addi {
+                    rd: prev_rd,
+                    rs1,
+                    imm,
+                    ..
+                },
+                Self::Addi {
+                    rd,
+                    rs1: base,
+                    imm: next_imm,
+                    ..
+                },
+            ) if prev_rd != Reg::ZERO
+                && prev_rd == base
+                && prev_rd == rd
+                && imm.checked_add(next_imm).is_some() =>
+            {
+                (
+                    Self::FusedAddiAddi {
+                        rd,
+                        rs1,
+                        imm: imm.wrapping_add(next_imm),
+                    },
+                    next,
+                )
+            }
             // `addi` + load
             (
                 Self::Addi {
@@ -1335,6 +1373,7 @@ where
     /// rather than both of them, and prints as the load it is equivalent to instead.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::FusedAddiAddi { rd, rs1, imm } => write!(f, "addi {rd}, {rs1}, {imm}"),
             Self::FusedAddiLb { rd, rs1, imm } => write!(f, "lb {rd}, {imm}({rs1})"),
             Self::FusedAddiLh { rd, rs1, imm } => write!(f, "lh {rd}, {imm}({rs1})"),
             Self::FusedAddiLw { rd, rs1, imm } => write!(f, "lw {rd}, {imm}({rs1})"),
@@ -1662,6 +1701,10 @@ where
         program_counter: &mut PC,
     ) -> ExecutionResult<Self::Reg> {
         match self {
+            Self::FusedAddiAddi { rd, rs1: _, imm } => {
+                let value = rs1_value.wrapping_add(i32::from(imm).cast_unsigned());
+                ExecutionResult::Continue { rd, value }
+            }
             Self::FusedAddiLb { rd, rs1: _, imm } => {
                 let addr = rs1_value.wrapping_add(i32::from(imm).cast_unsigned());
                 let value = i32::from(memory.read::<i8>(u64::from(addr))?);

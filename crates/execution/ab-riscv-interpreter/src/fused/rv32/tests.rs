@@ -89,6 +89,128 @@ fn prepare_load(state: &mut TestInterpreterState<Fused>) {
 }
 
 #[test]
+fn test_fuse_addi_addi() {
+    assert_fused_as(
+        Fused::Addi {
+            rd: Reg::A0,
+            rs1: Reg::A1,
+            rs2: Reg::Zero,
+            imm: 8,
+        },
+        Fused::Addi {
+            rd: Reg::A0,
+            rs1: Reg::A0,
+            rs2: Reg::Zero,
+            imm: -12,
+        },
+        Fused::FusedAddiAddi {
+            rd: Reg::A0,
+            rs1: Reg::A1,
+            rs2: Reg::Zero,
+            imm: -4,
+        },
+        "addi a0, a1, -4",
+    );
+
+    // The intermediate result has to die, which it does not when the second instruction writes
+    // somewhere else
+    assert_not_fused(
+        Fused::Addi {
+            rd: Reg::A0,
+            rs1: Reg::A1,
+            rs2: Reg::Zero,
+            imm: 8,
+        },
+        Fused::Addi {
+            rd: Reg::A2,
+            rs1: Reg::A0,
+            rs2: Reg::Zero,
+            imm: -12,
+        },
+    );
+    // ... or when it does not read it in the first place
+    assert_not_fused(
+        Fused::Addi {
+            rd: Reg::A0,
+            rs1: Reg::A1,
+            rs2: Reg::Zero,
+            imm: 8,
+        },
+        Fused::Addi {
+            rd: Reg::A0,
+            rs1: Reg::A2,
+            rs2: Reg::Zero,
+            imm: -12,
+        },
+    );
+    // Writing `zero` discards the result, so the first instruction is not dead code to begin with
+    assert_not_fused(
+        Fused::Addi {
+            rd: Reg::Zero,
+            rs1: Reg::A1,
+            rs2: Reg::Zero,
+            imm: 8,
+        },
+        Fused::Addi {
+            rd: Reg::Zero,
+            rs1: Reg::Zero,
+            rs2: Reg::Zero,
+            imm: -12,
+        },
+    );
+}
+
+#[test]
+fn test_execute_addi_addi() {
+    assert_same_execution(
+        Fused::Addi {
+            rd: Reg::A0,
+            rs1: Reg::A1,
+            rs2: Reg::Zero,
+            imm: 2047,
+        },
+        Fused::Addi {
+            rd: Reg::A0,
+            rs1: Reg::A0,
+            rs2: Reg::Zero,
+            imm: 2047,
+        },
+        prepare_bits,
+    );
+    assert_same_execution(
+        Fused::Addi {
+            rd: Reg::A0,
+            rs1: Reg::A1,
+            rs2: Reg::Zero,
+            imm: -2048,
+        },
+        Fused::Addi {
+            rd: Reg::A0,
+            rs1: Reg::A0,
+            rs2: Reg::Zero,
+            imm: -2048,
+        },
+        prepare_bits,
+    );
+    // The intermediate value wraps around, and so does the result
+    assert_same_execution(
+        Fused::Addi {
+            rd: Reg::A0,
+            rs1: Reg::Zero,
+            rs2: Reg::Zero,
+            imm: -1,
+        },
+        Fused::Addi {
+            rd: Reg::A0,
+            rs1: Reg::A0,
+            rs2: Reg::Zero,
+            imm: 1,
+        },
+        prepare_bits,
+    );
+}
+
+#[test]
 fn test_fuse_addi_load() {
     assert_fused_as(
         Fused::Addi {

@@ -104,6 +104,140 @@ fn prepare_load(state: &mut TestInterpreterState<Fused>) {
         .unwrap();
 }
 
+/// Puts values into the registers the `addi` + `sh[123]add` fusion combines
+fn prepare_addi_shxadd(state: &mut TestInterpreterState<Fused>) {
+    state.regs.write(Reg::A1, 0x1234);
+    state.regs.write(Reg::A2, 0x5678);
+}
+
+#[test]
+fn test_fuse_addi_shxadd() {
+    for (shamt, next) in [
+        (
+            1,
+            Fused::Sh1add {
+                rd: Reg::A0,
+                rs1: Reg::A0,
+                rs2: Reg::A2,
+            },
+        ),
+        (
+            2,
+            Fused::Sh2add {
+                rd: Reg::A0,
+                rs1: Reg::A0,
+                rs2: Reg::A2,
+            },
+        ),
+        (
+            3,
+            Fused::Sh3add {
+                rd: Reg::A0,
+                rs1: Reg::A0,
+                rs2: Reg::A2,
+            },
+        ),
+    ] {
+        assert_fused_as(
+            Fused::Addi {
+                rd: Reg::A0,
+                rs1: Reg::A1,
+                rs2: Reg::Zero,
+                imm: 4,
+            },
+            next,
+            Fused::FusedAddiShxadd {
+                rd: Reg::A0,
+                rs1: Reg::A1,
+                rs2: Reg::A2,
+                shamt,
+                imm: 4,
+            },
+            "addi a0, a1, 4",
+        );
+    }
+
+    // The intermediate result has to die, which it does not when the second instruction writes
+    // somewhere else
+    assert_not_fused(
+        Fused::Addi {
+            rd: Reg::A0,
+            rs1: Reg::A1,
+            rs2: Reg::Zero,
+            imm: 4,
+        },
+        Fused::Sh3add {
+            rd: Reg::A3,
+            rs1: Reg::A0,
+            rs2: Reg::A2,
+        },
+    );
+    // The second instruction reads a third register, and it reads it after the first instruction
+    // would have written its own result, so a pair that reads the very same register there cannot
+    // be fused without reading a stale value
+    assert_not_fused(
+        Fused::Addi {
+            rd: Reg::A0,
+            rs1: Reg::A1,
+            rs2: Reg::Zero,
+            imm: 4,
+        },
+        Fused::Sh3add {
+            rd: Reg::A0,
+            rs1: Reg::A0,
+            rs2: Reg::A0,
+        },
+    );
+    // Writing `zero` discards the result, so the first instruction is not dead code to begin with
+    assert_not_fused(
+        Fused::Addi {
+            rd: Reg::Zero,
+            rs1: Reg::A1,
+            rs2: Reg::Zero,
+            imm: 4,
+        },
+        Fused::Sh3add {
+            rd: Reg::Zero,
+            rs1: Reg::Zero,
+            rs2: Reg::A2,
+        },
+    );
+}
+
+#[test]
+fn test_execute_addi_shxadd() {
+    for next in [
+        Fused::Sh1add {
+            rd: Reg::A0,
+            rs1: Reg::A0,
+            rs2: Reg::A2,
+        },
+        Fused::Sh2add {
+            rd: Reg::A0,
+            rs1: Reg::A0,
+            rs2: Reg::A2,
+        },
+        Fused::Sh3add {
+            rd: Reg::A0,
+            rs1: Reg::A0,
+            rs2: Reg::A2,
+        },
+    ] {
+        for imm in [2047, -2048, 0] {
+            assert_same_execution(
+                Fused::Addi {
+                    rd: Reg::A0,
+                    rs1: Reg::A1,
+                    rs2: Reg::Zero,
+                    imm,
+                },
+                next,
+                prepare_addi_shxadd,
+            );
+        }
+    }
+}
+
 #[test]
 fn test_fuse_shxadd_load() {
     assert_fused(

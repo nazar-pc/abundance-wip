@@ -19,6 +19,10 @@ use core::ops::ControlFlow;
 /// Fused instructions that pair a Zba address generation instruction with a load, which is LLVM's
 /// `shxadd-load` macro fusion, as well as `sh[123]add.uw` and `add.uw` with one too.
 ///
+/// `addi` + `sh[123]add` is neither an LLVM macro fusion nor one any hardware implements. It is
+/// here because it is what the code actually contains: indexing a field of an array of structures
+/// computes the element offset first and adds the base second, and the offset dies right away.
+///
 /// The shift amount of `sh[123]add` is a field rather than a variant of its own: an interpreter
 /// pays nothing for a variable shift, and three times as many variants would cost instruction
 /// cache in every dispatch table they end up in.
@@ -27,6 +31,16 @@ use core::ops::ControlFlow;
 #[instruction(inherit = [Rv64Instruction, Rv64ZbaInstruction])]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rv64ZbaFusedInstruction<Reg> {
+    // `addi` + `sh[123]add`
+    #[instruction(if = [Addi, Sh1add], if = [Addi, Sh2add], if = [Addi, Sh3add])]
+    FusedAddiShxadd {
+        rd: Reg,
+        rs1: Reg,
+        rs2: Reg,
+        shamt: u8,
+        imm: i16,
+    },
+
     // `sh[123]add` + load
     #[instruction(if = [Sh1add, Lb], if = [Sh2add, Lb], if = [Sh3add, Lb])]
     FusedShxaddLb {
@@ -237,6 +251,67 @@ where
     #[cfg_attr(feature = "no-panic", no_panic_const::no_panic(const))]
     fn fuse(prev: Self, next: Self) -> (Self, Self) {
         match (prev, next) {
+            // `addi` + `sh[123]add`
+            (
+                Self::Addi {
+                    rd: prev_rd,
+                    rs1,
+                    imm,
+                    ..
+                },
+                Self::Sh1add {
+                    rd, rs1: base, rs2, ..
+                },
+            ) if prev_rd != Reg::ZERO && prev_rd == base && prev_rd == rd && prev_rd != rs2 => (
+                Self::FusedAddiShxadd {
+                    rd,
+                    rs1,
+                    rs2,
+                    shamt: 1,
+                    imm,
+                },
+                next,
+            ),
+            (
+                Self::Addi {
+                    rd: prev_rd,
+                    rs1,
+                    imm,
+                    ..
+                },
+                Self::Sh2add {
+                    rd, rs1: base, rs2, ..
+                },
+            ) if prev_rd != Reg::ZERO && prev_rd == base && prev_rd == rd && prev_rd != rs2 => (
+                Self::FusedAddiShxadd {
+                    rd,
+                    rs1,
+                    rs2,
+                    shamt: 2,
+                    imm,
+                },
+                next,
+            ),
+            (
+                Self::Addi {
+                    rd: prev_rd,
+                    rs1,
+                    imm,
+                    ..
+                },
+                Self::Sh3add {
+                    rd, rs1: base, rs2, ..
+                },
+            ) if prev_rd != Reg::ZERO && prev_rd == base && prev_rd == rd && prev_rd != rs2 => (
+                Self::FusedAddiShxadd {
+                    rd,
+                    rs1,
+                    rs2,
+                    shamt: 3,
+                    imm,
+                },
+                next,
+            ),
             // `sh[123]add` + load
             (
                 Self::Sh1add {
@@ -1326,6 +1401,13 @@ where
     /// [module-level documentation](super::super)
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::FusedAddiShxadd {
+                rd,
+                rs1,
+                rs2: _,
+                shamt: _,
+                imm,
+            } => write!(f, "addi {rd}, {rs1}, {imm}"),
             Self::FusedShxaddLb {
                 rd,
                 rs1,
@@ -1504,6 +1586,17 @@ where
         _program_counter: &mut PC,
     ) -> ExecutionResult<Self::Reg> {
         match self {
+            Self::FusedAddiShxadd {
+                rd,
+                rs1: _,
+                rs2: _,
+                shamt,
+                imm,
+            } => {
+                let value = (rs1_value.wrapping_add(i64::from(imm).cast_unsigned()) << shamt)
+                    .wrapping_add(rs2_value);
+                ExecutionResult::Continue { rd, value }
+            }
             Self::FusedShxaddLb {
                 rd,
                 rs1: _,
