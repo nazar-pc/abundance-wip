@@ -134,6 +134,37 @@ use proc_macro::TokenStream;
 /// register type, field types must have `Copy` bounds on them (like `Reg` in the example above),
 /// and the method body must consist of a single `match` statement.
 ///
+/// # `FusedInstruction::fuse()`
+///
+/// `FusedInstruction::fuse()` is composed the same way `execute()` is, out of both own and
+/// inherited arms, but with two differences that follow from what fusion is.
+///
+/// Its body must be a single `match (prev, next)` whose arms are pairs of instructions:
+/// ```rust,ignore
+/// match (prev, next) {
+///     (
+///         Self::Addi { rd: prev_rd, rs1, imm, .. },
+///         Self::Ld { rd, rs1: base, imm: offset, .. },
+///     ) if prev_rd != Reg::ZERO && prev_rd == base && prev_rd == rd => {
+///         (Self::FusedAddiLd { rd, rs1, imm, offset }, next)
+///     }
+///     _ => (prev, next),
+/// }
+/// ```
+/// Unlike `execute()`, arms here do have guards (a pair is only fusable under a condition), name
+/// the instruction they match with `..` rather than listing the generated `rs1`/`rs2` fields, and
+/// the trailing `_ => (prev, next)` arm is dropped and re-created during composition rather than
+/// inherited. An implementation with nothing to fuse is spelled as exactly `(prev, next)`, with no
+/// `match` at all.
+///
+/// An arm is only kept when every variant it mentions - both instructions of the pair and the
+/// fused instructions it constructs - is part of the instruction set being composed, so an
+/// instruction set that leaves out one half of a pair simply doesn't fuse it.
+///
+/// Unlike every other implementation this macro composes, `fuse()` is optional: an instruction set
+/// that has no fused instructions has no implementation of it either, and contributes no arms to
+/// the instruction sets it is inherited by.
+///
 /// # `process_instruction_macros()`
 ///
 /// What this macro "does" is impossible to do in Rust macros. So for completeness,

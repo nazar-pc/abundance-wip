@@ -303,7 +303,8 @@ pub(super) fn process_execution_impl(
         return Some(Err(anyhow::anyhow!(
             "Expected  `#[instruction_execution] impl ExecutableInstructionOperands for {0}` or \
             `#[instruction_execution] impl ExecutableInstructionCsr for {0}` or \
-            `#[instruction_execution] impl ExecutableInstruction for {0}`, but no trait was found",
+            `#[instruction_execution] impl ExecutableInstruction for {0}`, but no trait was \
+            found",
             item_impl.self_ty.to_token_stream()
         )));
     };

@@ -1,12 +1,14 @@
 mod add_missing_fields;
+mod extract_fused_matches;
 mod forbidden_checker;
 mod ignored_variants_remover;
 
 use crate::build::enum_impl::add_missing_fields::add_missing_rs_fields;
+use crate::build::enum_impl::extract_fused_matches::{FusedArm, extract_fused_arms};
 use crate::build::enum_impl::forbidden_checker::block_contains_forbidden_syntax;
 use crate::build::enum_impl::ignored_variants_remover::remove_ignored_variants;
 use crate::build::shared::{collect_all_dependencies, strip_const_where_predicates};
-use crate::build::state::{PendingEnumDisplayImpl, PendingEnumImpl, State};
+use crate::build::state::{PendingEnumDisplayImpl, PendingEnumFusedImpl, PendingEnumImpl, State};
 use ab_riscv_macros_common::code_utils::{post_process_rust_code, pre_process_rust_code};
 use anyhow::Context;
 use prettyplease::unparse;
@@ -16,11 +18,12 @@ use std::path::Path;
 use std::rc::Rc;
 use std::{env, fs, iter};
 use syn::{
-    Block, Expr, FieldPat, Fields, FnArg, Ident, ImplItem, ItemImpl, Member, Pat, PatWild, Stmt,
-    Token, Type, parse_file, parse_quote, parse_str,
+    Block, Expr, FieldPat, Fields, FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, Member, Pat,
+    PatWild, Stmt, Token, Type, parse_file, parse_quote, parse_str,
 };
 
 const ORIGINAL_ENUM_DECODING_IMPL_ENV_VAR_SUFFIX: &str = "__INSTRUCTION_ENUM_ORIGINAL_IMPL_PATH";
+const ORIGINAL_ENUM_FUSED_IMPL_ENV_VAR_SUFFIX: &str = "__INSTRUCTION_ENUM_ORIGINAL_FUSED_IMPL_PATH";
 
 pub(super) fn enum_name_from_impl(item_impl: &ItemImpl) -> Ident {
     let Type::Path(path) = item_impl.self_ty.as_ref() else {
@@ -255,7 +258,8 @@ pub(super) fn process_enum_impl(
     let Some((trait_path, _)) = &item_impl.trait_ else {
         return Some(Err(anyhow::anyhow!(
             "Expected `#[instruction] impl Instruction for {0}` or \
-            `#[instruction] impl Display for {0}`, but no trait was found",
+            `#[instruction] impl Display for {0}` or \
+            `#[instruction] impl FusedInstruction for {0}`, but no trait was found",
             item_impl.self_ty.to_token_stream()
         )));
     };
@@ -269,6 +273,8 @@ pub(super) fn process_enum_impl(
         process_enum_decoding_impl(item_impl, out_dir, state)
     } else if last_trait_segment_path.ident == "Display" {
         process_enum_display_impl(item_impl, out_dir, state)
+    } else if last_trait_segment_path.ident == "FusedInstruction" {
+        process_enum_fused_impl(item_impl, out_dir, state)
     } else {
         Err(anyhow::anyhow!(
             "Expected `impl` for `{}`, `#[instruction]` attribute must be added to a trait \
@@ -787,6 +793,297 @@ pub(super) fn process_pending_enum_impls(out_dir: &Path, state: &mut State) -> a
                 process_enum_display_impl(item_impl, out_dir, state)?;
             }
         }
+    }
+
+    Ok(())
+}
+
+pub(super) fn collect_original_enum_fused_impls_from_dependencies()
+-> impl Iterator<Item = anyhow::Result<(ItemImpl, Rc<Path>)>> {
+    // Collect exported instruction enums from dependencies
+    env::vars().filter_map(|(key, value)| {
+        if !key.ends_with(ORIGINAL_ENUM_FUSED_IMPL_ENV_VAR_SUFFIX) {
+            return None;
+        }
+
+        let result = try {
+            let mut item_enum_contents = fs::read_to_string(&value).with_context(|| {
+                format!(
+                    "Failed to read Rust file `{value}` that is expected to contain original \
+                    instruction enum fused implementation"
+                )
+            })?;
+            pre_process_rust_code(&mut item_enum_contents);
+            let item_impl = parse_str::<ItemImpl>(&item_enum_contents).with_context(|| {
+                format!(
+                    "Failed to parse Rust file `{value}` that is expected to contain original \
+                    instruction enum fused implementation"
+                )
+            })?;
+
+            (item_impl, Rc::from(Path::new(&value)))
+        };
+
+        Some(result)
+    })
+}
+
+fn extract_fuse_fn(item_impl: &ItemImpl) -> Option<&ImplItemFn> {
+    for item in &item_impl.items {
+        if let ImplItem::Fn(impl_item_fn) = item
+            && impl_item_fn.sig.ident == "fuse"
+        {
+            return Some(impl_item_fn);
+        }
+    }
+
+    None
+}
+
+fn extract_fuse_fn_from_impl_mut(impl_item: &mut [ImplItem]) -> Option<&mut ImplItemFn> {
+    for item in impl_item {
+        if let ImplItem::Fn(impl_item_fn) = item
+            && impl_item_fn.sig.ident == "fuse"
+        {
+            return Some(impl_item_fn);
+        }
+    }
+
+    None
+}
+
+fn output_original_enum_fused_impl(
+    enum_name: &Ident,
+    original_item_impl: ItemImpl,
+    out_dir: &Path,
+    state: &mut State,
+) -> anyhow::Result<()> {
+    let original_enum_file_path = out_dir.join(format!("{enum_name}_original_fused_impl.rs"));
+    let code = original_item_impl.to_token_stream().to_string();
+    // Format
+    let mut code = unparse(&parse_file(&code).expect("Original code is valid; qed"));
+    // Normalize source
+    let original_item_impl = parse_str(&code).expect("Original code is valid; qed");
+    post_process_rust_code(&mut code);
+
+    // Avoid extra file truncation/override if it didn't change
+    if fs::read_to_string(&original_enum_file_path).ok().as_ref() != Some(&code) {
+        fs::write(&original_enum_file_path, code).with_context(|| {
+            format!(
+                "Failed to write Rust file with original instruction fused implementation for \
+                `{enum_name}`",
+            )
+        })?;
+    }
+    println!(
+        "cargo::metadata={}{ORIGINAL_ENUM_FUSED_IMPL_ENV_VAR_SUFFIX}={}",
+        enum_name,
+        original_enum_file_path.display()
+    );
+
+    state.insert_known_original_enum_fused_impl(
+        original_item_impl,
+        Rc::from(original_enum_file_path),
+    )
+}
+
+fn output_processed_enum_fused_impl(
+    enum_name: &Ident,
+    item_impl: ItemImpl,
+    out_dir: &Path,
+) -> anyhow::Result<()> {
+    let enum_file_path = out_dir.join(format!("{enum_name}_fused_impl.rs"));
+    let code = item_impl.to_token_stream().to_string();
+    // Format
+    let mut code = unparse(&parse_file(&code).expect("Generated code is valid; qed"));
+    post_process_rust_code(&mut code);
+
+    // Avoid extra file truncation/override if it didn't change
+    if fs::read_to_string(&enum_file_path).ok().as_ref() != Some(&code) {
+        fs::write(&enum_file_path, code).with_context(|| {
+            format!(
+                "Failed to write generated Rust file with instruction fused implementation for \
+                `{enum_name}`",
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+/// Unlike other implementations, a dependency that has no fused instructions of its own has no
+/// fused implementation to inherit arms from either, which is indistinguishable from one that
+/// simply hasn't been processed yet. Hence, the original implementation is exported right away and
+/// composition is deferred until every file of the crate was scanned, at which point a dependency
+/// missing from the state is known to not have one at all.
+pub(super) fn process_enum_fused_impl(
+    original_item_impl: ItemImpl,
+    out_dir: &Path,
+    state: &mut State,
+) -> anyhow::Result<()> {
+    let enum_name = enum_name_from_impl(&original_item_impl);
+
+    if extract_fuse_fn(&original_item_impl).is_none() {
+        return Err(anyhow::anyhow!(
+            "Unexpected `impl` for `{}`, `#[instruction_execution]` attribute must be added to a \
+            trait implementation, but no `fuse` method was found",
+            original_item_impl.self_ty.to_token_stream()
+        ));
+    }
+
+    output_original_enum_fused_impl(&enum_name, original_item_impl.clone(), out_dir, state)?;
+
+    state.add_pending_enum_fused_impl(PendingEnumFusedImpl { original_item_impl });
+
+    Ok(())
+}
+
+fn compose_enum_fused_impl(
+    original_item_impl: ItemImpl,
+    out_dir: &Path,
+    state: &State,
+) -> anyhow::Result<()> {
+    let enum_name = enum_name_from_impl(&original_item_impl);
+    let mut item_impl = original_item_impl;
+
+    let fuse_fn = extract_fuse_fn_from_impl_mut(&mut item_impl.items)
+        .expect("Presence was checked before the implementation was deferred; qed");
+
+    let enum_definition = state
+        .get_known_enum_definition(&enum_name)
+        .with_context(|| format!("Instruction enum `{enum_name}` definition was not found"))?;
+
+    let all_dependencies =
+        collect_all_dependencies(state, enum_definition.direct_dependencies.iter().cloned())
+            .map_err(|dependency_enum_name| {
+                anyhow::anyhow!(
+                    "{enum_name} fused implementation is waiting on {dependency_enum_name} \
+                    definition that was never found"
+                )
+            })?;
+
+    let mut all_fuse_blocks = Vec::new();
+    let mut all_where_predicates = Vec::new();
+
+    for (dependency_enum_name, _dependency_enum_definition) in all_dependencies {
+        // The bounds of every dependency are needed, not just of those that have fused
+        // instructions, since this implementation is for the whole composed instruction set
+        if let Some(dependency_enum_decoding_impl) =
+            state.get_known_original_enum_decoding_impl(&dependency_enum_name)
+            && let Some(where_clause) = &dependency_enum_decoding_impl
+                .item_impl
+                .generics
+                .where_clause
+        {
+            all_where_predicates.extend(where_clause.predicates.iter().cloned());
+        }
+
+        // Extensions without fused instructions of their own contribute no arms here
+        let Some(dependency_enum_fused_impl) =
+            state.get_known_original_enum_fused_impl(&dependency_enum_name)
+        else {
+            continue;
+        };
+
+        all_fuse_blocks.push(
+            &extract_fuse_fn(&dependency_enum_fused_impl.item_impl)
+                .expect("Dependencies are all valid; qed")
+                .block,
+        );
+        if let Some(where_clause) = &dependency_enum_fused_impl.item_impl.generics.where_clause {
+            all_where_predicates.extend(where_clause.predicates.iter().cloned());
+        }
+    }
+
+    let is_const = item_impl.attrs.last() == Some(&parse_quote! { #[cst] });
+
+    {
+        let where_clause = item_impl
+            .generics
+            .where_clause
+            .get_or_insert(parse_quote! { where });
+        let mut already_inserted = where_clause
+            .predicates
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        for predicate in all_where_predicates {
+            if already_inserted.contains(&predicate) {
+                continue;
+            }
+            already_inserted.insert(predicate.clone());
+            where_clause.predicates.push(predicate);
+        }
+
+        // Non-const implementations that inherit arms from const ones must not keep `[const]`
+        if !is_const {
+            strip_const_where_predicates(&mut where_clause.predicates);
+        }
+    }
+
+    let allowed_instructions = enum_definition
+        .instructions
+        .iter()
+        .map(|instruction| &instruction.ident)
+        .collect::<HashSet<_>>();
+
+    let mut match_arms = Vec::new();
+    for block in all_fuse_blocks
+        .into_iter()
+        .chain(iter::once(&fuse_fn.block))
+    {
+        for FusedArm {
+            prev,
+            next,
+            constructed,
+            arm,
+        } in extract_fused_arms(block).with_context(|| {
+            format!(
+                "Failed to process `#[instruction_execution] impl FusedInstruction for \
+                {enum_name}`"
+            )
+        })? {
+            // An instruction of the pair or the fused instruction they turn into may be missing
+            // from this instruction set, in which case there is nothing to fuse here
+            if !allowed_instructions.contains(&prev)
+                || !allowed_instructions.contains(&next)
+                || !constructed
+                    .iter()
+                    .all(|variant| allowed_instructions.contains(variant))
+            {
+                continue;
+            }
+
+            match_arms.push(arm);
+        }
+    }
+
+    fuse_fn.block = parse_quote! {{
+        #[expect(clippy::allow_attributes, reason = "Attribute below")]
+        #[allow(clippy::rest_pattern_accessible_field, reason = "Generated code")]
+        #[allow(clippy::unnecessary_rest_pattern, reason = "Generated code")]
+        match (prev, next) {
+            #( #match_arms )*
+            _ => (prev, next),
+        }
+    }};
+
+    add_missing_rs_fields(&mut fuse_fn.block);
+
+    item_impl
+        .attrs
+        .insert(0, parse_quote! { #[automatically_derived] });
+
+    output_processed_enum_fused_impl(&enum_name, item_impl, out_dir)
+}
+
+/// Process fused implementations that were deferred until every file of the crate was scanned
+pub(super) fn process_pending_enum_fused_impls(
+    out_dir: &Path,
+    state: &mut State,
+) -> anyhow::Result<()> {
+    for PendingEnumFusedImpl { original_item_impl } in state.take_pending_enum_fused_impls() {
+        compose_enum_fused_impl(original_item_impl, out_dir, state)?;
     }
 
     Ok(())

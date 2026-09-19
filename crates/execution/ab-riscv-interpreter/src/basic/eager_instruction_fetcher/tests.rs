@@ -11,6 +11,7 @@ use crate::basic::BasicMemory;
 use crate::basic::eager_instruction_fetcher::{
     BasicEagerInstructionFetcher, BasicEagerInstructions,
 };
+use crate::fused::rv64::Rv64FusedInstruction;
 use crate::{ExecutionError, FetchInstructionResult, InstructionFetcher, ProgramCounter};
 use ab_riscv_primitives::prelude::*;
 use alloc::vec::Vec;
@@ -246,5 +247,121 @@ fn branch_that_wraps_around_the_address_space_is_out_of_bounds() {
     assert!(
         matches!(error, ExecutionError::OutOfBoundsRead { address: _ }),
         "Unexpected error {error:?}"
+    );
+}
+
+/// Instruction set with fused instructions, which [`BasicEagerInstructions::decode_fused()`]
+/// produces and the tests below inspect
+type FusedI = Rv64FusedInstruction<Reg<u64>>;
+
+/// `addi a0, a1, 8`
+const ADDI: u32 = 0x0085_8513;
+/// `ld a0, -4(a0)`, which fuses with the `addi` above
+const LD: u32 = 0xffc5_3503;
+/// `ld a2, -4(a0)`, which does not: it leaves the value the `addi` wrote behind
+const LD_OTHER_RD: u32 = 0xffc5_3603;
+
+/// Stored in slots whose bytes do not decode
+const FUSED_FALLBACK: FusedI = Rv64FusedInstruction::Unimp {
+    rs1: Reg::ZERO,
+    rs2: Reg::ZERO,
+};
+
+/// Decode `instructions` with fusion, at [`BASE_ADDR`] and with the return trap past the end
+fn new_fused_instructions(instructions: &[u32]) -> BasicEagerInstructions<FusedI> {
+    let code = instructions
+        .iter()
+        .flat_map(|instruction| instruction.to_le_bytes())
+        .collect::<Vec<_>>();
+    let return_trap_address = BASE_ADDR + code.len() as u64;
+
+    // SAFETY: The instruction stream ends with a jump, the return trap is outside of it and the
+    // base address is aligned
+    unsafe {
+        BasicEagerInstructions::decode_fused(&code, FUSED_FALLBACK, return_trap_address, BASE_ADDR)
+    }
+}
+
+/// Instruction that the slot at `address` holds
+fn slot_at(instructions: &BasicEagerInstructions<FusedI>, address: u64) -> FusedI {
+    let memory = Memory::default();
+    // SAFETY: Address of one of the decoded instructions
+    let mut fetcher = unsafe { instructions.fetcher(address) };
+
+    let FetchInstructionResult::Instruction(instruction) =
+        InstructionFetcher::<FusedI, Memory>::fetch_instruction(&mut fetcher, &memory)
+    else {
+        panic!("Expected an instruction");
+    };
+
+    instruction
+}
+
+#[test]
+fn fusion_replaces_the_first_instruction_of_a_pair_and_leaves_the_second_in_its_slot() {
+    let instructions = new_fused_instructions(&[ADDI, LD, RET]);
+
+    assert_eq!(
+        slot_at(&instructions, BASE_ADDR),
+        Rv64FusedInstruction::FusedAddiLd {
+            rd: Reg::A0,
+            rs1: Reg::A1,
+            rs2: Reg::ZERO,
+            imm: 8 - 4,
+        }
+    );
+    // A branch may still target the second instruction of the pair directly, so it is executable
+    // on its own exactly as it was
+    assert_eq!(
+        slot_at(&instructions, BASE_ADDR + 4),
+        FusedI::try_decode(LD).expect("Valid instruction; qed")
+    );
+    assert_eq!(
+        slot_at(&instructions, BASE_ADDR + 8),
+        FusedI::try_decode(RET).expect("Valid instruction; qed")
+    );
+}
+
+#[test]
+fn a_pair_that_does_not_fuse_is_left_alone() {
+    let instructions = new_fused_instructions(&[ADDI, LD_OTHER_RD, RET]);
+
+    assert_eq!(
+        slot_at(&instructions, BASE_ADDR),
+        FusedI::try_decode(ADDI).expect("Valid instruction; qed")
+    );
+}
+
+#[test]
+fn a_fused_instruction_steps_over_the_whole_pair() {
+    let instructions = new_fused_instructions(&[ADDI, LD, RET]);
+    let memory = Memory::default();
+    // SAFETY: This is the address of the first instruction
+    let mut fetcher = unsafe { instructions.fetcher(BASE_ADDR) };
+
+    let FetchInstructionResult::Instruction(_fused) =
+        InstructionFetcher::<FusedI, Memory>::fetch_instruction(&mut fetcher, &memory)
+    else {
+        panic!("Expected an instruction");
+    };
+
+    // Fetching the fused instruction moved past both instructions it replaced rather than past the
+    // first one only
+    assert_eq!(
+        ProgramCounter::<u64, Memory>::get_pc(&fetcher),
+        BASE_ADDR + 8
+    );
+}
+
+#[test]
+fn fusion_only_looks_at_pairs_that_really_are_adjacent_instructions() {
+    // The `addi` fuses with the `ld` that follows it, which leaves the second `ld` with nothing in
+    // front of it to fuse with, since the walk resumes on the `ld` that was fused rather than on
+    // the one after it
+    let instructions = new_fused_instructions(&[ADDI, LD, LD, RET]);
+
+    assert_eq!(
+        slot_at(&instructions, BASE_ADDR + 8),
+        FusedI::try_decode(LD).expect("Valid instruction; qed")
     );
 }

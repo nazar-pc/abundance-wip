@@ -1,5 +1,14 @@
 //! Re-export of all traits, core types, and instruction helpers
 
+pub use crate::fused::rv32::Rv32FusedInstruction;
+pub use crate::fused::rv32::m::Rv32MFusedInstruction;
+pub use crate::fused::rv32::zba::Rv32ZbaFusedInstruction;
+pub use crate::fused::rv32::zca::Rv32ZcaFusedInstruction;
+pub use crate::fused::rv64::Rv64FusedInstruction;
+pub use crate::fused::rv64::m::Rv64MFusedInstruction;
+pub use crate::fused::rv64::zba::Rv64ZbaFusedInstruction;
+pub use crate::fused::rv64::zca::Rv64ZcaFusedInstruction;
+pub use crate::fused::{FusedInstruction, fused_helpers};
 pub use crate::rv32::a::{ReservationSet, amo_helpers};
 pub use crate::rv32::b::zbb::rv32_zbb_helpers;
 pub use crate::rv32::b::zbc::rv32_zbc_helpers;

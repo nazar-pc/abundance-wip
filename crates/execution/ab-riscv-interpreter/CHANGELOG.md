@@ -8,6 +8,11 @@ New features:
 
 * `BasicEagerInstructions` and `BasicEagerInstructionFetcher` (behind the `alloc` feature): a high-performance generic
   instruction fetcher that decodes the whole program upfront into a single heap allocation
+* `fused` module with instruction fusion: a `FusedInstruction` trait and composable fused extensions covering the macro
+  fusions LLVM emits code for (`addi-load`, `add-load`, `ld-add`, `auipc-addi`, `auipc-load`, `lui-addi`, `lui-load`,
+  `zexth`, `zextw`, `shifted-zextw`, `bfext`, `shxadd-load` and `conditional-cmv`) for both RV32 and RV64
+* `BasicEagerInstructions::decode_fused()` (behind the `alloc` feature), which fuses the decoded instructions once,
+  while the instructions are being decoded, rather than during execution
 * Several examples with various levels of complexity
 
 Improvements:

@@ -105,6 +105,16 @@
 //!   of, although it would be cheaper to support the fuller feature set only required by V
 //!   extension
 //!
+//! ### Instruction fusion
+//!
+//! [`fused`] module has instruction sets whose instructions are pairs of ordinary instructions
+//! fused into one, the way hardware macro-fusion does it, which costs an interpreter one dispatch
+//! instead of two. They compose like any other extension and, since nothing encodes them, a pass
+//! over already decoded instructions is what produces them -
+//! [`BasicEagerInstructions::decode_fused()`] does that pass while decoding a program.
+//!
+//! [`BasicEagerInstructions::decode_fused()`]: basic::BasicEagerInstructions::decode_fused
+//!
 //! ### Instruction implementations are assembled, not compiled in place
 //!
 //! Instruction implementations are not compiled where they are written. `build.rs` calls
@@ -142,6 +152,7 @@
     const_result_trait_fn,
     const_trait_impl,
     const_try,
+    const_try_residual,
     explicit_tail_calls,
     fn_align,
     generic_const_args,
@@ -152,10 +163,10 @@
     macroless_generic_const_args,
     min_generic_const_args,
     signed_bigint_helpers,
+    try_blocks,
     try_trait_v2,
     widening_mul
 )]
-#![cfg_attr(test, feature(try_blocks))]
 #![cfg_attr(
     not(any(
         all(target_arch = "riscv32", target_feature = "zbkx"),
@@ -204,6 +215,7 @@
 
 pub mod basic;
 mod const_utils;
+pub mod fused;
 pub mod prelude;
 pub mod rv32;
 pub mod rv64;

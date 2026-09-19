@@ -60,7 +60,8 @@ fn process_enum_impl(item_impl: ItemImpl) -> Result<TokenStream, Error> {
             item_impl.span(),
             format!(
                 "Expected `#[instruction] impl Instruction for {0}` or \
-                `#[instruction] impl Display for {0}`, but no trait was found",
+                `#[instruction] impl Display for {0}` or \
+                `#[instruction] impl FusedInstruction for {0}`, but no trait was found",
                 item_impl.self_ty.to_token_stream()
             ),
         ));
@@ -80,6 +81,13 @@ fn process_enum_impl(item_impl: ItemImpl) -> Result<TokenStream, Error> {
         })
     } else if last_trait_segment_path.ident == "Display" {
         let enum_file_path = format!("/{enum_name}_display_impl.rs");
+
+        // Replace enum implementation with a processed impl stored in a Rust file
+        Ok(quote! {
+            include!(concat!(env!("OUT_DIR"), #enum_file_path));
+        })
+    } else if last_trait_segment_path.ident == "FusedInstruction" {
+        let enum_file_path = format!("/{enum_name}_fused_impl.rs");
 
         // Replace enum implementation with a processed impl stored in a Rust file
         Ok(quote! {
