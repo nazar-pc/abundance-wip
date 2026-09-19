@@ -9,6 +9,9 @@ Breaking changes:
 Improvements:
 
 * Support instruction macros in non-src directories (tests, examples, etc.)
+* `Instruction::size()` composition attributes each instruction set's body to the instructions that set defines itself
+  rather than to every instruction it is composed of, which is what makes instruction sets of differing instruction
+  sizes composable
 
 # 0.1.1
 

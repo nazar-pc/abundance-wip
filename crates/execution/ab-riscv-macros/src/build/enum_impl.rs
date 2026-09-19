@@ -344,8 +344,11 @@ pub(super) fn process_enum_decoding_impl(
         all_try_decode_blocks.push(dependency_blocks.try_decode);
         all_dependency_alignment_blocks.push(dependency_blocks.alignment);
 
+        // Only own variants of a dependency: variants it inherited are covered by whichever
+        // dependency defines them, which is collected here too, and whose size may well be
+        // different from this one's
         let variant_idents = dependency_enum_definition
-            .instructions
+            .own_instructions
             .iter()
             .map(|v| &v.ident)
             .collect::<Vec<_>>();
@@ -495,6 +498,7 @@ pub(super) fn process_enum_decoding_impl(
                 .instructions
                 .iter()
                 .filter(|variant| !already_covered.contains(&variant.ident))
+                .map(|variant| &variant.ident)
                 .peekable();
 
             if own_only.peek().is_some() {
