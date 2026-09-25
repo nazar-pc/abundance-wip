@@ -1,0 +1,136 @@
+Per-PC dispatch profiling for the CoreMark runner.
+
+Replaces the counting fetcher with one that also records, per guest PC, how many
+times it was dispatched and how many times a relative branch there was taken. It
+also takes the ELF from the environment rather than from the build script, so one
+build can profile every configuration a sweep produced.
+
+Not wired into the repository. Apply with `git apply`, then:
+
+  ELF=<coremark.elf> PROFILE_OUT=run.prof COREMARK_DISPATCH_COUNT=1 \
+    COREMARK_ITERATIONS=1000 cargo run --release -p ab-riscv-coremark-runner
+  riscv64-unknown-elf-objdump -d <coremark.elf> > dis.txt
+  python3 annotate-profile.py dis.txt run.prof
+
+which writes run.prof.funcs (per-function dispatch totals, sorted) and
+run.prof.annot (annotated disassembly, one line per instruction with its dispatch
+count and taken count). That is what found everything in
+`interpreter-targeted-codegen.md` §9.
+
+--- a/crates/execution/ab-riscv-coremark-runner/src/main.rs
++++ b/crates/execution/ab-riscv-coremark-runner/src/main.rs
+@@ -18,8 +18,9 @@
+ use crate::time_csr::TimeCsrState;
+ use ab_riscv_interpreter::basic::{
+     BasicEagerInstructions, BasicInterpreterState, BasicMemory, BasicRegisters,
+-    CountingInstructionFetcher,
+ };
++mod profiling;
++use profiling::ProfilingFetcher as CountingInstructionFetcher;
+ use ab_riscv_interpreter::prelude::*;
+ use ab_riscv_primitives::prelude::*;
+ use anyhow::Context;
+@@ -27,7 +28,7 @@
+ use std::ffi::CStr;
+ 
+ /// Coremark ELF binary compiled by build.rs for the RISC-V guest
+-const COREMARK_ELF: &[u8] = include_bytes!(env!("COREMARK_ELF"));
++
+ /// Guest virtual address of the trap / return sentinel.
+ ///
+ /// The caller writes this into `ra` before calling `main`; when `main` returns, the interpreter
+@@ -96,6 +97,9 @@
+     // cost of running the `match` loop rather than threaded dispatch.
+     let count_dispatches = env::var("COREMARK_DISPATCH_COUNT").is_ok_and(|value| value != "0");
+ 
++    let elf_path = env::var("ELF").context("ELF env var")?;
++    let COREMARK_ELF: Vec<u8> = std::fs::read(&elf_path)?;
++    let COREMARK_ELF: &[u8] = &COREMARK_ELF;
+     if COREMARK_ELF.is_empty() {
+         return Err(anyhow::anyhow!(
+             "Coremark ELF not found, install `riscv64-unknown-elf-gcc` and/or specify `RISCV_CC` \
+@@ -162,6 +166,7 @@
+         state.execute().context("Coremark execution failed")?;
+ 
+         let dispatches = state.instruction_fetcher.dispatches();
++        state.instruction_fetcher.dump(&env::var("PROFILE_OUT").unwrap_or("profile.txt".into()));
+         memory = state.memory;
+         Some(dispatches)
+     } else {
+--- /dev/null
++++ b/crates/execution/ab-riscv-coremark-runner/src/profiling.rs
+@@ -0,0 +1,74 @@
++use ab_riscv_interpreter::{ExecutionError, FetchInstructionResult, InstructionFetcher, ProgramCounter};
++use ab_riscv_primitives::prelude::*;
++use core::ops::ControlFlow;
++use std::io::Write;
++
++pub struct ProfilingFetcher<IF> {
++    inner: IF,
++    dispatches: u64,
++    counts: Vec<u64>,
++    // per-PC: how many times a relative branch/jump was taken (try_set_pc_relative succeeded)
++    taken: Vec<u64>,
++    last_pc: u64,
++}
++
++impl<IF> ProfilingFetcher<IF> {
++    pub fn new(inner: IF) -> Self {
++        Self { inner, dispatches: 0, counts: vec![0; 1 << 20], taken: vec![0; 1 << 20], last_pc: 0 }
++    }
++    pub fn dispatches(&self) -> u64 { self.dispatches }
++    pub fn dump(&self, path: &str) {
++        let mut f = std::fs::File::create(path).unwrap();
++        for (i, c) in self.counts.iter().enumerate() {
++            if *c != 0 { writeln!(f, "{:x} {} {}", i * 2, c, self.taken[i]).unwrap(); }
++        }
++    }
++}
++
++impl<IF, Memory> ProgramCounter<u64, Memory> for ProfilingFetcher<IF>
++where
++    IF: ProgramCounter<u64, Memory>,
++{
++    #[inline(always)]
++    fn get_pc(&self) -> u64 { self.inner.get_pc() }
++    #[inline(always)]
++    unsafe fn try_set_pc_relative(&mut self, instruction_size: u8, offset: i32) -> bool {
++        let r = unsafe { self.inner.try_set_pc_relative(instruction_size, offset) };
++        if r { self.taken[(self.last_pc / 2) as usize] += 1; }
++        r
++    }
++    #[inline(always)]
++    unsafe fn failed_branch(&mut self, memory: &Memory) -> Result<ControlFlow<()>, ExecutionError<u64>> {
++        unsafe { self.inner.failed_branch(memory) }
++    }
++    #[inline(always)]
++    fn set_pc(&mut self, memory: &Memory, pc: u64) -> Result<ControlFlow<()>, ExecutionError<u64>> {
++        self.inner.set_pc(memory, pc)
++    }
++}
++
++impl<IF, I, Memory> InstructionFetcher<I, Memory> for ProfilingFetcher<IF>
++where
++    IF: InstructionFetcher<I, Memory> + ProgramCounter<u64, Memory>,
++    I: Instruction,
++    I::Reg: Register<Type = u64>,
++{
++    type Peeked = IF::Peeked;
++    #[inline(always)]
++    fn peek_instruction(&mut self, memory: &Memory) -> FetchInstructionResult<I, Self::Peeked> { self.inner.peek_instruction(memory) }
++    #[inline(always)]
++    fn peeked_instruction<'a>(&'a self, peeked: &'a Self::Peeked) -> &'a I { self.inner.peeked_instruction(peeked) }
++    #[inline(always)]
++    unsafe fn advance(&mut self, instruction_size: u8) { unsafe { self.inner.advance(instruction_size) } }
++    #[inline(always)]
++    fn fetch_instruction(&mut self, memory: &Memory) -> FetchInstructionResult<I> {
++        let pc: u64 = ProgramCounter::<u64, Memory>::get_pc(&self.inner);
++        let result = self.inner.fetch_instruction(memory);
++        if let FetchInstructionResult::Instruction(_) = &result {
++            self.dispatches = self.dispatches.wrapping_add(1);
++            self.last_pc = pc;
++            if let Some(c) = self.counts.get_mut((pc / 2) as usize) { *c += 1; }
++        }
++        result
++    }
++}
