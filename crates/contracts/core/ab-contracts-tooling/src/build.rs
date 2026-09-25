@@ -48,9 +48,18 @@ pub fn build_cdylib(options: BuildOptions<'_>) -> anyhow::Result<PathBuf> {
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
         // Hack for enabling RISC-V Zknh backend in `sha2` crate since it is a nightly-only feature,
         // and they really don't like using normal features for it.
+        //
+        // `RUSTFLAGS` is replaced rather than extended because whatever the host build is using
+        // does not apply to a guest built for a different target, so `AB_EXTRA_RUSTFLAGS` is the
+        // way to pass flags to the guest specifically. It exists for sweeping code generation
+        // options against the interpreter benchmarks, see
+        // `specs/discussions/riscv-interpreter-measurements.md`.
         .env(
             "RUSTFLAGS",
-            r#"--cfg sha2_backend="riscv-zknh" --cfg sha2_backend_riscv_zknh="compact""#,
+            format!(
+                r#"--cfg sha2_backend="riscv-zknh" --cfg sha2_backend_riscv_zknh="compact" {}"#,
+                env::var("AB_EXTRA_RUSTFLAGS").unwrap_or_default()
+            ),
         )
         .args([
             "rustc",
@@ -68,6 +77,31 @@ pub fn build_cdylib(options: BuildOptions<'_>) -> anyhow::Result<PathBuf> {
         command_builder
             .env_remove("RUSTC")
             .env_remove("RUSTC_WRAPPER");
+    }
+
+    // Build the guest with a different compiler than the host, which is how a patched LLVM gets
+    // exercised on contract code, see `specs/discussions/riscv-interpreter-measurements.md`.
+    //
+    // Setting `RUSTUP_TOOLCHAIN` alone does nothing here. Cargo passes `RUSTC` to build scripts as
+    // an absolute path into the host toolchain rather than as the `rustup` shim, and the nested
+    // Cargo honors that variable, so the override is inherited straight past and the guest is built
+    // by the host compiler with nothing to indicate it. The same applies to `RUSTDOC`, and
+    // `LD_LIBRARY_PATH` points at the host toolchain's library directory.
+    if let Ok(toolchain) = env::var("AB_GUEST_TOOLCHAIN") {
+        command_builder
+            .env_remove("RUSTC")
+            .env_remove("RUSTDOC")
+            .env_remove("RUSTC_WRAPPER")
+            .env_remove("LD_LIBRARY_PATH");
+
+        // An absolute path is taken as the compiler itself, anything else as a `rustup` toolchain
+        // name, so both `~/rustc-interp/rust/build/host/stage2/bin/rustc` and a linked toolchain
+        // work.
+        if Path::new(&toolchain).is_absolute() {
+            command_builder.env("RUSTC", &toolchain);
+        } else {
+            command_builder.env("RUSTUP_TOOLCHAIN", &toolchain);
+        }
     }
 
     if let Some(package) = package {

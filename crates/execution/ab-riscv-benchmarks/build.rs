@@ -15,6 +15,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let target_specification = TargetSpecification::create(&out_dir)?;
 
+    // Printed so that a run which meant to override them cannot quietly turn out not to have.
+    if target_specification.is_overridden() {
+        println!(
+            "cargo::warning=guest built with AB_GUEST_CPU={:?} AB_GUEST_FEATURES={:?}",
+            env::var("AB_GUEST_CPU").unwrap_or_default(),
+            env::var("AB_GUEST_FEATURES").unwrap_or_default(),
+        );
+    }
+
     let cdylib_path = build_cdylib(BuildOptions {
         package: None,
         features: None,
@@ -35,6 +44,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     write(&contract_path, output_bytes)?;
 
     println!("cargo::rustc-env=CONTRACT_PATH={}", contract_path.display());
+
+    // Without this the contract is silently reused when only the guest's code generation options
+    // changed, which makes a sweep report the same numbers for every configuration
+    println!("cargo::rerun-if-env-changed=AB_EXTRA_RUSTFLAGS");
+    println!("cargo::rerun-if-env-changed=AB_GUEST_CPU");
+    println!("cargo::rerun-if-env-changed=AB_GUEST_FEATURES");
+    println!("cargo::rerun-if-env-changed=AB_GUEST_TOOLCHAIN");
 
     Ok(())
 }
