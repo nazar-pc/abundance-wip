@@ -1,10 +1,12 @@
 //! Basic implementations of various interpreter traits
 
+mod counting_instruction_fetcher;
 #[cfg(feature = "alloc")]
 mod eager_instruction_fetcher;
 #[cfg(test)]
 mod tests;
 
+pub use crate::basic::counting_instruction_fetcher::CountingInstructionFetcher;
 #[cfg(feature = "alloc")]
 pub use crate::basic::eager_instruction_fetcher::{
     BasicEagerInstructionFetcher, BasicEagerInstructions,

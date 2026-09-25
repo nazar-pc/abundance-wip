@@ -418,17 +418,16 @@ where
 
 impl VectorRegistersExt<Reg<u64>> for Env {}
 
-impl<Regs, I> SystemInstructionHandler<Reg<u64>, Regs, TestMemory, TestInstructionFetcher<I>>
-    for Env
+impl<Regs, PC> SystemInstructionHandler<Reg<u64>, Regs, TestMemory, PC> for Env
 where
-    I: Instruction<Reg = Reg<u64>>,
+    PC: ProgramCounter<u64, TestMemory>,
 {
     #[inline(always)]
     fn handle_ecall(
         &mut self,
         _regs: &mut Regs,
         _memory: &mut TestMemory,
-        program_counter: &mut TestInstructionFetcher<I>,
+        program_counter: &mut PC,
     ) -> Result<ControlFlow<()>, ExecutionError<u64>> {
         Err(ExecutionError::EcallUnsupported {
             address: crate::PackedAddress::new(

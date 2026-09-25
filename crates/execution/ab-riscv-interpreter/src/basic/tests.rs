@@ -1,5 +1,6 @@
 use crate::RegisterFile;
-use crate::basic::BasicRegisters;
+use crate::basic::{BasicInterpreterState, BasicRegisters, CountingInstructionFetcher};
+use crate::rv64::test_utils::initialize_state;
 use ab_riscv_primitives::prelude::*;
 
 #[test]
@@ -168,4 +169,70 @@ fn test_eregisters_all_registers() {
 
     // Zero should still be zero
     assert_eq!(regs.read(EReg::<u64>::Zero), 0);
+}
+
+#[test]
+fn test_counting_instruction_fetcher() {
+    type I = Rv64Instruction<Reg<u64>>;
+
+    /// Run `instructions` through a counting fetcher and report what it dispatched
+    fn dispatches<Instructions>(instructions: Instructions) -> u64
+    where
+        Instructions: IntoIterator<Item = I>,
+    {
+        let state = initialize_state(instructions);
+        let mut state = BasicInterpreterState {
+            regs: state.regs,
+            env: state.env,
+            memory: state.memory,
+            instruction_fetcher: CountingInstructionFetcher::new(state.instruction_fetcher),
+        };
+        state.execute::<I>().unwrap();
+
+        state.instruction_fetcher.dispatches()
+    }
+
+    // Straight-line code dispatches every instruction once
+    assert_eq!(
+        dispatches([
+            I::Addi {
+                rd: Reg::A0,
+                rs1: Reg::Zero,
+                rs2: Reg::Zero,
+                imm: 1,
+            },
+            I::Addi {
+                rd: Reg::A0,
+                rs1: Reg::A0,
+                rs2: Reg::Zero,
+                imm: 2,
+            },
+        ]),
+        2
+    );
+
+    // A loop dispatches what it executes rather than what it is made of, which is the whole point
+    // of counting rather than reading the instructions off
+    assert_eq!(
+        dispatches([
+            I::Addi {
+                rd: Reg::A0,
+                rs1: Reg::Zero,
+                rs2: Reg::Zero,
+                imm: 3,
+            },
+            I::Addi {
+                rd: Reg::A0,
+                rs1: Reg::A0,
+                rs2: Reg::Zero,
+                imm: -1,
+            },
+            I::Bne {
+                rs1: Reg::A0,
+                rs2: Reg::Zero,
+                imm: -4,
+            },
+        ]),
+        1 + 3 * 2
+    );
 }
