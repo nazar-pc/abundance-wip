@@ -1,4 +1,9 @@
 use crate::time_csr::{TimeCsrInstruction, TimeCsrState};
+use ab_riscv_interpreter::fused::rv64::Rv64FusedInstruction;
+use ab_riscv_interpreter::fused::rv64::m::Rv64MFusedInstruction;
+use ab_riscv_interpreter::fused::rv64::zba::Rv64ZbaFusedInstruction;
+use ab_riscv_interpreter::fused::rv64::zbb::Rv64ZbbFusedInstruction;
+use ab_riscv_interpreter::fused::rv64::zca::Rv64ZcaFusedInstruction;
 use ab_riscv_interpreter::prelude::*;
 use ab_riscv_macros::{instruction, instruction_execution};
 use ab_riscv_primitives::prelude::*;
@@ -15,6 +20,11 @@ type CoremarkRegister = Reg<u64>;
         Rv64BInstruction,
         Rv64ZcaInstruction,
         TimeCsrInstruction,
+        Rv64FusedInstruction,
+        Rv64MFusedInstruction,
+        Rv64ZbaFusedInstruction,
+        Rv64ZbbFusedInstruction,
+        Rv64ZcaFusedInstruction,
     ],
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +44,14 @@ const impl<Reg> Instruction for CoremarkInstruction<Reg> {
     #[inline(always)]
     fn size(&self) -> u8 {
         size_of::<u32>() as u8
+    }
+}
+
+#[instruction]
+impl<Reg> FusedInstruction for CoremarkInstruction<Reg> {
+    #[inline(always)]
+    fn fuse(prev: Self, next: Self) -> (Self, Self) {
+        (prev, next)
     }
 }
 
