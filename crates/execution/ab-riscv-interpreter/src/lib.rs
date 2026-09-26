@@ -1415,12 +1415,10 @@ where
             Self::TAG_CSR_ILLEGAL_WRITE => ExecutionError::CsrIllegalWrite { csr_index },
             Self::TAG_CSR_UNKNOWN => ExecutionError::CsrUnknown { csr_index },
             Self::TAG_CSR_INSUFFICIENT_PRIVILEGE => {
-                // SAFETY: `::new()` constructor created this value with `to_bits()`
-                let required =
-                    unsafe { PrivilegeLevel::from_bits((payload >> 16) as u8).unwrap_unchecked() };
-                // SAFETY: `::new()` constructor created this value with `to_bits()`
-                let current =
-                    unsafe { PrivilegeLevel::from_bits((payload >> 24) as u8).unwrap_unchecked() };
+                let required = PrivilegeLevel::from_bits((payload >> 16) as u8)
+                    .expect("`new()` encoded this value with `to_bits()`; qed");
+                let current = PrivilegeLevel::from_bits((payload >> 24) as u8)
+                    .expect("`new()` encoded this value with `to_bits()`; qed");
 
                 ExecutionError::CsrInsufficientPrivilege {
                     csr_index,
