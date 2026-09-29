@@ -2,12 +2,7 @@
 #
 # This is a minimal counterpart to abundance-rv64i-max: only the base ISA (plus Zicsr, Sm and
 # Ssstrict, which every core here needs) and a narrow set of vector extensions (Zve32x, Zvbb and
-# its Zvkb subset) with VLEN=128 are enabled.
-# Zca is enabled too, since ACT4's SsstrictSm tests are broken without it: the compressed
-# instruction sweep relies on its fast trap handler advancing `mepc` by 2, which is impossible
-# with IALIGN=32.
-# TODO: Remove Zca once https://github.com/riscv/riscv-arch-test/issues/2584 is resolved
-# Everything else is disabled to avoid mostly repeating
+# its Zvkb subset) with VLEN=128 are enabled. Everything else is disabled to avoid mostly repeating
 # the abundance-rv64i-max run, what remains are base ISA tests and vector tests with ELEN=32 and
 # VLEN=128.
 #
