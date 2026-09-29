@@ -5,15 +5,13 @@ These are representative of the features `ab-riscv-interpreter` is capable of.
 ## `abundance-rv32i-zve32x-zvbb`
 
 RV32I "core" with only Zve32x and Zvbb (and its Zvkb subset) extensions on top of the base ISA and VLEN=128. Zca is also
-enabled because ACT4 requires it for SsstrictSm tests, Zifencei is enabled because the Sail reference model executes
-`fence.i` even when it is configured as unsupported. Other extensions are disabled to avoid re-running mostly the same
+enabled because ACT4 requires it for SsstrictSm tests. Other extensions are disabled to avoid re-running mostly the same
 tests as `abundance-rv32i-max`.
 
 ## `abundance-rv64i-zve32x-zvbb`
 
 RV64I "core" with only Zve32x and Zvbb (and its Zvkb subset) extensions on top of the base ISA and VLEN=128. Zca is also
-enabled because ACT4 requires it for SsstrictSm tests, Zifencei is enabled because the Sail reference model executes
-`fence.i` even when it is configured as unsupported. Other extensions are disabled to avoid re-running mostly the same
+enabled because ACT4 requires it for SsstrictSm tests. Other extensions are disabled to avoid re-running mostly the same
 tests as `abundance-rv64i-max`.
 
 ## `abundance-rv32i-max`

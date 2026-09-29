@@ -8,9 +8,7 @@ use core::ops::ControlFlow;
 
 /// Configuration of the RV64I core with Zve32x and Zvbb.
 ///
-/// Zca is enabled because ACT4's SsstrictSm tests are broken on cores without it, Zifencei is
-/// enabled because the Sail reference model executes `fence.i` even when it is configured as
-/// unsupported.
+/// Zca is enabled because ACT4's SsstrictSm tests are broken on cores without it.
 pub(crate) const ABUNDANCE_RV64I_ZVE32X_ZVBB_CONFIG: CoreConfig = CoreConfig {
     misa_extensions: MISA_I,
     zkr: false,
@@ -30,10 +28,6 @@ pub(crate) type AbundanceRv64IZve32xZvbbInstruction = AbundanceRv64IZve32xZvbbIn
         // TODO: Remove Zca once https://github.com/riscv/riscv-arch-test/issues/2584 is resolved
         Rv64ZcaInstruction,
         ZicsrInstruction,
-        // Zifencei is enabled because the Sail reference model executes `fence.i` even when it is
-        // configured as unsupported
-        // TODO: Remove Zifencei once https://github.com/riscv/sail-riscv/issues/1984 is resolved
-        ZifenceiInstruction,
         ZvbbInstruction,
         ZveXxInstruction,
         MachineModePlaceholder,
