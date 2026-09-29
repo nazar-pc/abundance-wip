@@ -5,14 +5,11 @@ use ab_riscv_macros::{instruction, instruction_execution};
 use ab_riscv_primitives::prelude::*;
 use core::fmt;
 
-/// Configuration of the RV64I core with Zve32x and Zvbb.
-///
-/// Zca is enabled because ACT4's SsstrictSm tests are broken on cores without it.
+/// Configuration of the RV64I core with Zve32x and Zvbb
 pub(crate) const ABUNDANCE_RV64I_ZVE32X_ZVBB_CONFIG: CoreConfig = CoreConfig {
     misa_extensions: MISA_I,
     zkr: false,
-    // TODO: Remove Zca once https://github.com/riscv/riscv-arch-test/issues/2584 is resolved
-    zca: true,
+    zca: false,
 };
 
 /// RV64I base ISA with Zve32x and Zvbb extensions
@@ -24,8 +21,6 @@ pub(crate) type AbundanceRv64IZve32xZvbbInstruction = AbundanceRv64IZve32xZvbbIn
 #[instruction(
     inherit = [
         Rv64Instruction,
-        // TODO: Remove Zca once https://github.com/riscv/riscv-arch-test/issues/2584 is resolved
-        Rv64ZcaInstruction,
         ZicsrInstruction,
         ZvbbInstruction,
         ZveXxInstruction,
