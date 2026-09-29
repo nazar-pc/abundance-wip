@@ -63,12 +63,10 @@ const SIZE_OF<T>: usize = size_of::<T>();
 /// `abundance-` prefix
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Core {
-    /// RV32I with Zve32x and Zvbb, VLEN=128 (Zca and Zifencei are also enabled because ACT4
-    /// requires them)
+    /// RV32I with Zve32x and Zvbb, VLEN=128 (Zca is also enabled because ACT4 requires it)
     #[value(name = "rv32i-zve32x-zvbb")]
     Rv32IZve32xZvbb,
-    /// RV64I with Zve32x and Zvbb, VLEN=128 (Zca and Zifencei are also enabled because ACT4
-    /// requires them)
+    /// RV64I with Zve32x and Zvbb, VLEN=128 (Zca is also enabled because ACT4 requires it)
     #[value(name = "rv64i-zve32x-zvbb")]
     Rv64IZve32xZvbb,
     /// RV32I with every supported extension enabled
