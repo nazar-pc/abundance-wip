@@ -1,5 +1,5 @@
 use crate::instruction::MachineModePlaceholder;
-use crate::interpreter::{CoreConfig, MISA_I, MISA_M};
+use crate::interpreter::{CoreConfig, MISA_I};
 use ab_riscv_interpreter::prelude::*;
 use ab_riscv_macros::{instruction, instruction_execution};
 use ab_riscv_primitives::prelude::*;
@@ -7,11 +7,11 @@ use core::fmt;
 
 /// Configuration of the RV32I core with Zve32x and Zvbb.
 ///
-/// M is also enabled because ACT4 requires it for all vector tests, Zca is enabled because ACT4's
-/// SsstrictSm tests are broken on cores without it, Zifencei is enabled because the Sail reference
-/// model executes `fence.i` even when it is configured as unsupported.
+/// Zca is enabled because ACT4's SsstrictSm tests are broken on cores without it, Zifencei is
+/// enabled because the Sail reference model executes `fence.i` even when it is configured as
+/// unsupported.
 pub(crate) const ABUNDANCE_RV32I_ZVE32X_ZVBB_CONFIG: CoreConfig = CoreConfig {
-    misa_extensions: MISA_I | MISA_M,
+    misa_extensions: MISA_I,
     zkr: false,
     // TODO: Remove Zca once https://github.com/riscv/riscv-arch-test/issues/2584 is resolved
     zca: true,
@@ -26,7 +26,6 @@ pub(crate) type AbundanceRv32IZve32xZvbbInstruction = AbundanceRv32IZve32xZvbbIn
 #[instruction(
     inherit = [
         Rv32Instruction,
-        Rv32MInstruction,
         // TODO: Remove Zca once https://github.com/riscv/riscv-arch-test/issues/2584 is resolved
         Rv32ZcaInstruction,
         ZicsrInstruction,

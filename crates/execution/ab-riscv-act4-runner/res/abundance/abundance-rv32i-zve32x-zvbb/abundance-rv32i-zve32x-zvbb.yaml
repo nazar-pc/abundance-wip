@@ -8,8 +8,6 @@ description: Abundance RV32I core with Zve32x and Zvbb
 
 implemented_extensions:
   - { name: I,        version: "= 2.1" }
-  # M is required by ACT4 for all vector tests
-  - { name: M,        version: "= 2.0" }
   # Zca is required by ACT4 for SsstrictSm tests to work
   # TODO: Remove Zca once https://github.com/riscv/riscv-arch-test/issues/2584 is resolved
   - { name: Zca,      version: "= 1.0.0" }
@@ -18,7 +16,6 @@ implemented_extensions:
   # configured as unsupported, which the SsstrictSm tests check
   # TODO: Remove Zifencei once https://github.com/riscv/sail-riscv/issues/1984 is resolved
   - { name: Zifencei, version: "= 2.0" }
-  - { name: Zmmul,    version: "= 1.0.0" }
   - { name: Zvbb,     version: "= 1.0.0" }
   - { name: Zve32x,   version: "= 1.0.0" }
   - { name: Zvkb,     version: "= 1.0.0" }
@@ -158,9 +155,6 @@ params:
   # Must be a power-of-2 >= 4
   MISALIGNED_MAX_ATOMICITY_GRANULE_SIZE: 4096
   MISALIGNED_SPLIT_STRATEGY: sequential_bytes
-
-  # --- Extension mutability ---
-  MUTABLE_MISA_M: false
 
   # --- Vector ---
   VLEN: 128
