@@ -19,7 +19,7 @@ use core::assert_matches;
 //   E16/M2 -> VLMAX=32, 2 regs
 //   E32/M2 -> VLMAX=16, 2 regs (vd for widening E16 uses 2 regs)
 //   E8/M4  -> VLMAX=128, 4 regs (vd for widening E32 uses 4 regs - but VLMAX=8 at E32/M1)
-const TEST_VLENB: usize = VLENB_USIZE::<{ <Env as VectorRegisters>::VLEN }>;
+const TEST_VLENB: usize = VLENB_USIZE::<{ <Env as VectorLengths>::VLEN }>;
 const {
     assert!(TEST_VLENB == 32);
 }

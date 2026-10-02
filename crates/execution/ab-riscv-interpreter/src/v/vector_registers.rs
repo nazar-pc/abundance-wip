@@ -591,12 +591,10 @@ impl<const VLEN: Vlen> VectorRegisterFile<VLEN> {
 ///
 /// Note that due to Rust type system limitations, you should use [`VectorRegistersExt`] in trait
 /// bounds instead of this trait directly or else the solver will fail.
-pub const trait VectorRegisters {
-    /// Maximum vector element width `ELEN` in bits
-    const ELEN: Elen;
-    /// Vector register width `VLEN` in bits
-    const VLEN: Vlen;
-
+pub const trait VectorRegisters
+where
+    Self: VectorLengths,
+{
     /// Read the vector register file
     fn read_vregs(&self) -> &VectorRegisterFile<{ Self::VLEN }>;
 
@@ -792,15 +790,17 @@ where
 
 // Convenience for threaded execution
 // TODO: Forward generically instead, once the compiler normalizes
-//  `<&mut T as VectorRegisters>::VLEN` to `T::VLEN`:
+//  `<&mut T as VectorLengths>::VLEN` to `T::VLEN`:
 //  https://github.com/rust-lang/rust/issues/161264
 #[macro_export]
 macro_rules! impl_vector_registers_for_mut_ref {
     ($env:ty, $reg:ty) => {
-        impl VectorRegisters for &mut $env {
-            const ELEN: Elen = <$env as VectorRegisters>::ELEN;
-            const VLEN: Vlen = <$env as VectorRegisters>::VLEN;
+        impl VectorLengths for &mut $env {
+            const ELEN: Elen = <$env as VectorLengths>::ELEN;
+            const VLEN: Vlen = <$env as VectorLengths>::VLEN;
+        }
 
+        impl VectorRegisters for &mut $env {
             #[inline(always)]
             fn read_vregs(&self) -> &VectorRegisterFile<{ Self::VLEN }> {
                 <$env as VectorRegisters>::read_vregs(self)

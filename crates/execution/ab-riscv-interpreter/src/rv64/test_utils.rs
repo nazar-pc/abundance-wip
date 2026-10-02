@@ -391,13 +391,15 @@ impl Csrs<Reg<u64>> for Env {
     }
 }
 
+impl VectorLengths for Env {
+    const ELEN: Elen = Elen::L64;
+    const VLEN: Vlen = Vlen::L256;
+}
+
 const impl VectorRegisters for Env
 where
     Self: Csrs<Reg<u64>>,
 {
-    const ELEN: Elen = Elen::L64;
-    const VLEN: Vlen = Vlen::L256;
-
     fn read_vregs(&self) -> &VectorRegisterFile<{ Self::VLEN }> {
         &self.vector.vregs
     }

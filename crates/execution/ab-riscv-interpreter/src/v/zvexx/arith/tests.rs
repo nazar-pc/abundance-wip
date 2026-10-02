@@ -1735,10 +1735,12 @@ impl Csrs<Reg<u64>> for AlternatingConfigEnv {
     }
 }
 
-impl VectorRegisters for AlternatingConfigEnv {
+impl VectorLengths for AlternatingConfigEnv {
     const ELEN: Elen = Elen::L64;
     const VLEN: Vlen = Vlen::L256;
+}
 
+impl VectorRegisters for AlternatingConfigEnv {
     fn read_vregs(&self) -> &VectorRegisterFile<{ Self::VLEN }> {
         self.inner.read_vregs()
     }

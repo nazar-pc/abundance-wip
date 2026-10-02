@@ -229,14 +229,16 @@ impl Csrs<Reg<u64>> for Env {
     }
 }
 
-impl VectorRegisters for Env {
+impl VectorLengths for Env {
     /// The widest element the guest may ask for, the `64` of `Zve64x`
     const ELEN: Elen = Elen::L64;
     /// How wide a vector register is. The guest was compiled for `Zvl128b`, which is a lower
     /// bound: it configures `vl` with `vsetvli` and processes whatever the implementation gives it,
     /// so a wider register file just means fewer trips around its loop.
     const VLEN: Vlen = Vlen::L512;
+}
 
+impl VectorRegisters for Env {
     #[inline(always)]
     fn read_vregs(&self) -> &VectorRegisterFile<{ Self::VLEN }> {
         &self.vregs

@@ -224,10 +224,12 @@ impl Csrs<Reg<u64>> for Zve32Env {
     }
 }
 
-impl VectorRegisters for Zve32Env {
+impl VectorLengths for Zve32Env {
     const ELEN: Elen = Elen::L32;
-    const VLEN: Vlen = <Env as VectorRegisters>::VLEN;
+    const VLEN: Vlen = <Env as VectorLengths>::VLEN;
+}
 
+impl VectorRegisters for Zve32Env {
     fn read_vregs(&self) -> &VectorRegisterFile<{ Self::VLEN }> {
         self.0.read_vregs()
     }

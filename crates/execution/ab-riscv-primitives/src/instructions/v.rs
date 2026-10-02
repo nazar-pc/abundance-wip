@@ -246,6 +246,14 @@ impl Vlen {
     }
 }
 
+/// Vector lengths of an implementation
+pub trait VectorLengths {
+    /// Maximum vector element width `ELEN` in bits
+    const ELEN: Elen;
+    /// Vector register width `VLEN` in bits
+    const VLEN: Vlen;
+}
+
 /// Assertion for supported ELEN + VLEN combinations, to be used in `where` bounds (panics on
 /// invalid input)
 pub const SUPPORTED_ELEN_VLEN<const ELEN: Elen, const VLEN: Vlen>: usize = {
