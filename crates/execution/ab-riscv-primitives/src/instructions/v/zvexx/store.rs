@@ -3,9 +3,10 @@
 #[cfg(test)]
 mod tests;
 
-use crate::instructions::Instruction;
+use crate::instructions::isa::{IsaExtension, MAX_ISA_EXTENSIONS};
 use crate::instructions::v::zvexx::load::{LoadStoreNreg, Nf, SegVmNf};
 use crate::instructions::v::{Eew, V};
+use crate::instructions::{Instruction, InstructionIsa};
 use crate::registers::general_purpose::Register;
 use crate::registers::vector::VReg;
 use ab_riscv_macros::instruction;
@@ -239,6 +240,14 @@ where
     fn size(&self) -> u8 {
         size_of::<u32>() as u8
     }
+}
+
+#[instruction]
+impl<Reg, Cfg> InstructionIsa<Cfg> for ZveXxStoreInstruction<Reg>
+where
+    Reg: Register,
+{
+    const OWN_ISA_EXTENSIONS: &'static [IsaExtension] = &[];
 }
 
 #[instruction]

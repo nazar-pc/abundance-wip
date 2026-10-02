@@ -122,6 +122,29 @@ use proc_macro::TokenStream;
 /// since the macro will simply copy-paste the decoding logic as is. Similarly with missing imports,
 /// etc. Compiler should be able to guide you through errors reasonably well.
 ///
+/// # Enum ISA implementation
+///
+/// For enum ISA implementation, the macro is applied to the implementation of `InstructionIsa`
+/// trait, which must specify ISA extensions defined by the enum itself:
+/// ```rust,ignore
+/// #[instruction]
+/// impl<Reg, Cfg> InstructionIsa<Cfg> for Rv64MInstruction<Reg>
+/// where
+///     Reg: Register<Type = u64>,
+/// {
+///     const OWN_ISA_EXTENSIONS: &'static [IsaExtension] = &[IsaExtension::new("m", 2, 0)];
+/// }
+/// ```
+///
+/// The macro generates the rest of the implementation, which combines extensions of the enum
+/// itself with those of all inherited enums, except for enums that were ignored as a whole.
+/// Similarly to decoding, `OWN_ISA_EXTENSIONS` expressions of inherited enums are copied as is, so
+/// `Self` in them refers to the whole instruction set and `where` bounds (like
+/// `Cfg: VectorLengths`) are propagated. This allows extensions to depend on the presence of other
+/// extensions, like `Zca` implying `C` only when `F`/`D` are not present. Generic parameters must
+/// be named `Reg` and `Cfg` for this to work, and `IsaExtension` with `MAX_ISA_EXTENSIONS` must be
+/// in scope.
+///
 /// # Enum display implementation
 ///
 /// For enum display implementation, the macro is applied to the implementation of

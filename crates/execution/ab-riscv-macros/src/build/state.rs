@@ -1,3 +1,4 @@
+use crate::build::enum_definition::ignored_instruction_variants;
 use crate::build::enum_impl::enum_name_from_impl;
 use std::collections::hash_map::OccupiedError;
 use std::collections::{HashMap, HashSet};
@@ -11,6 +12,8 @@ pub(super) struct KnownEnumDefinition {
     pub(super) own_instructions: Vec<Rc<Variant>>,
     pub(super) instructions: Vec<Rc<Variant>>,
     pub(super) ignored_instructions: Rc<HashSet<Ident>>,
+    /// Instructions that were ignored explicitly by name rather than as a part of a whole enum
+    pub(super) ignored_instruction_variants: HashSet<Ident>,
     pub(super) direct_dependencies: Rc<[Ident]>,
     pub(super) dependencies_for_enablement: HashSet<Rc<[Ident]>>,
     pub(super) source: Rc<Path>,
@@ -28,12 +31,23 @@ pub(super) struct KnownOriginalEnumDecodingImpl {
 }
 
 #[derive(Debug)]
+pub(super) struct KnownOriginalEnumIsaImpl {
+    pub(super) item_impl: ItemImpl,
+    pub(super) source: Rc<Path>,
+}
+
+#[derive(Debug)]
 pub(super) struct PendingEnumImpl {
     pub(super) item_impl: ItemImpl,
 }
 
 #[derive(Debug)]
 pub(super) struct PendingEnumDisplayImpl {
+    pub(super) item_impl: ItemImpl,
+}
+
+#[derive(Debug)]
+pub(super) struct PendingEnumIsaImpl {
     pub(super) item_impl: ItemImpl,
 }
 
@@ -68,8 +82,10 @@ pub(super) struct State {
     known_enum_definitions: HashMap<Ident, KnownEnumDefinition>,
     pending_enum_definitions: Vec<PendingEnumDefinition>,
     known_original_enum_decoding_impls: HashMap<Ident, KnownOriginalEnumDecodingImpl>,
+    known_original_enum_isa_impls: HashMap<Ident, KnownOriginalEnumIsaImpl>,
     pending_enum_impls: Vec<PendingEnumImpl>,
     pending_enum_display_impls: Vec<PendingEnumDisplayImpl>,
+    pending_enum_isa_impls: Vec<PendingEnumIsaImpl>,
     pending_enum_operands_impls: Vec<PendingEnumOperandsImpl>,
     known_enum_csr_impls: HashMap<Ident, KnownEnumCsrImpl>,
     pending_enum_csr_impls: Vec<PendingEnumCsrImpl>,
@@ -83,8 +99,10 @@ impl State {
             known_enum_definitions: HashMap::new(),
             pending_enum_definitions: Vec::new(),
             known_original_enum_decoding_impls: HashMap::new(),
+            known_original_enum_isa_impls: HashMap::new(),
             pending_enum_impls: Vec::new(),
             pending_enum_display_impls: Vec::new(),
+            pending_enum_isa_impls: Vec::new(),
             pending_enum_operands_impls: Vec::new(),
             known_enum_csr_impls: HashMap::new(),
             pending_enum_csr_impls: Vec::new(),
@@ -107,6 +125,13 @@ impl State {
         self.known_original_enum_decoding_impls.get(enum_name)
     }
 
+    pub(super) fn get_known_original_enum_isa_impl(
+        &self,
+        enum_name: &Ident,
+    ) -> Option<&KnownOriginalEnumIsaImpl> {
+        self.known_original_enum_isa_impls.get(enum_name)
+    }
+
     pub(super) fn get_known_enum_csr_impl(&self, enum_name: &Ident) -> Option<&KnownEnumCsrImpl> {
         self.known_enum_csr_impls.get(enum_name)
     }
@@ -127,6 +152,8 @@ impl State {
         dependencies_for_enablement: HashSet<Rc<[Ident]>>,
         source: Rc<Path>,
     ) -> anyhow::Result<()> {
+        let ignored_instruction_variants =
+            ignored_instruction_variants(&original_item_enum, &ignored_instructions)?;
         let known_enum_definition = KnownEnumDefinition {
             own_instructions: original_item_enum
                 .variants
@@ -135,6 +162,7 @@ impl State {
                 .collect(),
             instructions: item_enum.variants.into_iter().map(Rc::new).collect(),
             ignored_instructions: Rc::new(ignored_instructions),
+            ignored_instruction_variants,
             direct_dependencies,
             dependencies_for_enablement,
             source,
@@ -182,6 +210,39 @@ impl State {
         {
             return Err(anyhow::anyhow!(
                 "Implementation for enum `{enum_name}` is already defined in `{}`, a different \
+                duplicate found in `{}`\n{:?}\n{:?}",
+                entry.get().source.display(),
+                source.display(),
+                entry.get().item_impl,
+                item_impl,
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn insert_known_original_enum_isa_impl(
+        &mut self,
+        item_impl: ItemImpl,
+        source: Rc<Path>,
+    ) -> anyhow::Result<()> {
+        let enum_name = enum_name_from_impl(&item_impl);
+
+        if let Err(OccupiedError {
+            entry,
+            key: enum_name,
+            value,
+            ..
+        }) = self.known_original_enum_isa_impls.try_insert(
+            enum_name,
+            KnownOriginalEnumIsaImpl {
+                item_impl: item_impl.clone(),
+                source: Rc::clone(&source),
+            },
+        ) && entry.get().item_impl != value.item_impl
+        {
+            return Err(anyhow::anyhow!(
+                "ISA implementation for enum `{enum_name}` is already defined in `{}`, a different \
                 duplicate found in `{}`\n{:?}\n{:?}",
                 entry.get().source.display(),
                 source.display(),
@@ -280,6 +341,14 @@ impl State {
     ) {
         self.pending_enum_display_impls
             .push(pending_enum_display_impl);
+    }
+
+    pub(super) fn take_pending_enum_isa_impls(&mut self) -> Vec<PendingEnumIsaImpl> {
+        mem::take(&mut self.pending_enum_isa_impls)
+    }
+
+    pub(super) fn add_pending_enum_isa_impl(&mut self, pending_enum_isa_impl: PendingEnumIsaImpl) {
+        self.pending_enum_isa_impls.push(pending_enum_isa_impl);
     }
 
     pub(super) fn take_pending_enum_impls(&mut self) -> Vec<PendingEnumImpl> {

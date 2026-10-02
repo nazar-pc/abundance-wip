@@ -2,11 +2,12 @@ mod add_missing_fields;
 mod forbidden_checker;
 mod ignored_variants_remover;
 
+use crate::build::enum_definition::has_enablement_conditions;
 use crate::build::enum_impl::add_missing_fields::add_missing_rs_fields;
 use crate::build::enum_impl::forbidden_checker::block_contains_forbidden_syntax;
 use crate::build::enum_impl::ignored_variants_remover::remove_ignored_variants;
 use crate::build::shared::{collect_all_dependencies, strip_const_where_predicates};
-use crate::build::state::{PendingEnumDisplayImpl, PendingEnumImpl, State};
+use crate::build::state::{PendingEnumDisplayImpl, PendingEnumImpl, PendingEnumIsaImpl, State};
 use ab_riscv_macros_common::code_utils::{post_process_rust_code, pre_process_rust_code};
 use anyhow::Context;
 use prettyplease::unparse;
@@ -22,6 +23,7 @@ use syn::{
 };
 
 const ORIGINAL_ENUM_DECODING_IMPL_ENV_VAR_SUFFIX: &str = "__INSTRUCTION_ENUM_ORIGINAL_IMPL_PATH";
+const ORIGINAL_ENUM_ISA_IMPL_ENV_VAR_SUFFIX: &str = "__INSTRUCTION_ENUM_ORIGINAL_ISA_IMPL_PATH";
 
 pub(super) fn enum_name_from_impl(item_impl: &ItemImpl) -> Ident {
     let Type::Path(path) = item_impl.self_ty.as_ref() else {
@@ -59,6 +61,36 @@ pub(super) fn collect_original_enum_decoding_impls_from_dependencies()
                 format!(
                     "Failed to parse Rust file `{value}` that is expected to contain instruction \
                     enum implementation"
+                )
+            })?;
+
+            (item_impl, Rc::from(Path::new(&value)))
+        };
+
+        Some(result)
+    })
+}
+
+pub(super) fn collect_original_enum_isa_impls_from_dependencies()
+-> impl Iterator<Item = anyhow::Result<(ItemImpl, Rc<Path>)>> {
+    // Collect exported instruction enums from dependencies
+    env::vars().filter_map(|(key, value)| {
+        if !key.ends_with(ORIGINAL_ENUM_ISA_IMPL_ENV_VAR_SUFFIX) {
+            return None;
+        }
+
+        let result = try {
+            let mut item_enum_contents = fs::read_to_string(&value).with_context(|| {
+                format!(
+                    "Failed to read Rust file `{value}` that is expected to contain instruction \
+                    enum ISA implementation"
+                )
+            })?;
+            pre_process_rust_code(&mut item_enum_contents);
+            let item_impl = parse_str::<ItemImpl>(&item_enum_contents).with_context(|| {
+                format!(
+                    "Failed to parse Rust file `{value}` that is expected to contain instruction \
+                    enum ISA implementation"
                 )
             })?;
 
@@ -241,6 +273,61 @@ fn output_processed_enum_display_impl(
     Ok(())
 }
 
+fn output_processed_enum_isa_impl(
+    enum_name: &Ident,
+    original_item_impl: ItemImpl,
+    item_impl: ItemImpl,
+    out_dir: &Path,
+    state: &mut State,
+) -> anyhow::Result<()> {
+    {
+        let enum_file_path = out_dir.join(format!("{enum_name}_isa_impl.rs"));
+        let code = item_impl.to_token_stream().to_string();
+        // Format
+        let mut code = unparse(&parse_file(&code).expect("Generated code is valid; qed"));
+        post_process_rust_code(&mut code);
+
+        // Avoid extra file truncation/override if it didn't change
+        if fs::read_to_string(&enum_file_path).ok().as_ref() != Some(&code) {
+            fs::write(&enum_file_path, code).with_context(|| {
+                format!(
+                    "Failed to write generated Rust file with instruction ISA implementation for \
+                    `{enum_name}`"
+                )
+            })?;
+        }
+    }
+    {
+        let original_enum_file_path = out_dir.join(format!("{enum_name}_original_isa_impl.rs"));
+        let code = original_item_impl.to_token_stream().to_string();
+        // Format
+        let mut code = unparse(&parse_file(&code).expect("Original code is valid; qed"));
+        // Normalize source
+        let original_item_impl = parse_str(&code).expect("Original code is valid; qed");
+        post_process_rust_code(&mut code);
+
+        // Avoid extra file truncation/override if it didn't change
+        if fs::read_to_string(&original_enum_file_path).ok().as_ref() != Some(&code) {
+            fs::write(&original_enum_file_path, code).with_context(|| {
+                format!(
+                    "Failed to write Rust file with original instruction ISA implementation for \
+                    `{enum_name}`"
+                )
+            })?;
+        }
+        println!(
+            "cargo::metadata={}{ORIGINAL_ENUM_ISA_IMPL_ENV_VAR_SUFFIX}={}",
+            enum_name,
+            original_enum_file_path.display()
+        );
+
+        state.insert_known_original_enum_isa_impl(
+            original_item_impl,
+            Rc::from(original_enum_file_path),
+        )
+    }
+}
+
 pub(super) fn process_enum_impl(
     mut item_impl: ItemImpl,
     out_dir: &Path,
@@ -255,7 +342,8 @@ pub(super) fn process_enum_impl(
 
     let Some((trait_path, _)) = &item_impl.trait_ else {
         return Some(Err(anyhow::anyhow!(
-            "Expected `#[instruction] impl Instruction for {0}` or \
+            "Expected `#[instruction] impl Instruction for {0}`, \
+            `#[instruction] impl InstructionIsa for {0}` or \
             `#[instruction] impl Display for {0}`, but no trait was found",
             item_impl.self_ty.to_token_stream()
         )));
@@ -268,6 +356,8 @@ pub(super) fn process_enum_impl(
 
     Some(if last_trait_segment_path.ident == "Instruction" {
         process_enum_decoding_impl(item_impl, out_dir, state)
+    } else if last_trait_segment_path.ident == "InstructionIsa" {
+        process_enum_isa_impl(item_impl, out_dir, state)
     } else if last_trait_segment_path.ident == "Display" {
         process_enum_display_impl(item_impl, out_dir, state)
     } else {
@@ -741,6 +831,188 @@ pub(super) fn process_enum_display_impl(
     output_processed_enum_display_impl(enum_name, item_impl, out_dir)
 }
 
+pub(super) fn process_enum_isa_impl(
+    original_item_impl: ItemImpl,
+    out_dir: &Path,
+    state: &mut State,
+) -> anyhow::Result<()> {
+    let enum_name = enum_name_from_impl(&original_item_impl);
+    let mut item_impl = original_item_impl.clone();
+
+    if own_isa_extensions_from_impl(&item_impl.items).is_none() {
+        return Err(anyhow::anyhow!(
+            "Expected `#[instruction] impl InstructionIsa for {enum_name}` to contain \
+            `OWN_ISA_EXTENSIONS` constant, but it was not found"
+        ));
+    }
+
+    let Some(enum_definition) = state.get_known_enum_definition(&enum_name) else {
+        state.add_pending_enum_isa_impl(PendingEnumIsaImpl { item_impl });
+        return Ok(());
+    };
+
+    let all_dependencies = match collect_all_dependencies(
+        state,
+        enum_definition.direct_dependencies.iter().cloned(),
+    ) {
+        Ok(all_dependencies) => all_dependencies,
+        Err(dependency_enum_name) => {
+            eprintln!("{enum_name} ISA is waiting on {dependency_enum_name} definition");
+            state.add_pending_enum_isa_impl(PendingEnumIsaImpl { item_impl });
+            return Ok(());
+        }
+    };
+
+    let allowed_instructions = enum_definition
+        .instructions
+        .iter()
+        .map(|instruction| &instruction.ident)
+        .collect::<HashSet<_>>();
+
+    // An inherited extension is a part of the instruction set unless it was ignored as a whole.
+    // This is checked by verifying that all of its instructions are present, except those ignored
+    // explicitly by name and those missing due to unsatisfied conditions of individual
+    // instructions.
+    let all_definitions = iter::once(enum_definition).chain(
+        all_dependencies
+            .iter()
+            .map(|(_, dependency_enum_definition)| *dependency_enum_definition),
+    );
+    let ignored_instruction_variants = all_definitions
+        .clone()
+        .flat_map(|definition| &definition.ignored_instruction_variants)
+        .collect::<HashSet<_>>();
+    let ignored_with_whole_enums = all_definitions
+        .clone()
+        .flat_map(|definition| definition.ignored_instructions.iter())
+        .filter(|instruction| !ignored_instruction_variants.contains(instruction))
+        .collect::<HashSet<_>>();
+    let conditional_instructions = all_definitions
+        .flat_map(|definition| &definition.own_instructions)
+        .filter(|variant| {
+            has_enablement_conditions(variant) && !ignored_with_whole_enums.contains(&variant.ident)
+        })
+        .map(|variant| &variant.ident)
+        .collect::<HashSet<_>>();
+
+    let mut all_own_isa_extensions = Vec::new();
+    let mut all_where_predicates = Vec::new();
+
+    for (dependency_enum_name, dependency_enum_definition) in &all_dependencies {
+        // Instruction implementation of this enum has `where` predicates of all dependencies, so
+        // this implementation needs them too
+        let Some(dependency_enum_decoding_impl) =
+            state.get_known_original_enum_decoding_impl(dependency_enum_name)
+        else {
+            eprintln!(
+                "{enum_name} ISA is waiting on {dependency_enum_name} decoding implementation"
+            );
+            state.add_pending_enum_isa_impl(PendingEnumIsaImpl { item_impl });
+            return Ok(());
+        };
+        if let Some(where_clause) = &dependency_enum_decoding_impl
+            .item_impl
+            .generics
+            .where_clause
+        {
+            all_where_predicates.extend(where_clause.predicates.iter().cloned());
+        }
+
+        let is_isa_dependency = dependency_enum_definition
+            .instructions
+            .iter()
+            .all(|variant| {
+                allowed_instructions.contains(&variant.ident)
+                    || ignored_instruction_variants.contains(&variant.ident)
+                    || conditional_instructions.contains(&variant.ident)
+            });
+        if !is_isa_dependency {
+            continue;
+        }
+
+        let Some(dependency_enum_isa_impl) =
+            state.get_known_original_enum_isa_impl(dependency_enum_name)
+        else {
+            eprintln!("{enum_name} ISA is waiting on {dependency_enum_name} ISA implementation");
+            state.add_pending_enum_isa_impl(PendingEnumIsaImpl { item_impl });
+            return Ok(());
+        };
+        if let Some(where_clause) = &dependency_enum_isa_impl.item_impl.generics.where_clause {
+            all_where_predicates.extend(where_clause.predicates.iter().cloned());
+        }
+        // Expressions are copied rather than referenced, such that `Self` in them refers to the
+        // instruction set being processed, which allows extensions to depend on others
+        all_own_isa_extensions.push(
+            own_isa_extensions_from_impl(&dependency_enum_isa_impl.item_impl.items)
+                .expect("Dependencies are all valid; qed")
+                .clone(),
+        );
+    }
+
+    if !all_where_predicates.is_empty() {
+        let where_clause = item_impl
+            .generics
+            .where_clause
+            .get_or_insert_with(|| parse_quote! { where });
+
+        let mut already_inserted = where_clause
+            .predicates
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+
+        for predicate in all_where_predicates {
+            if already_inserted.insert(predicate.clone()) {
+                where_clause.predicates.push(predicate);
+            }
+        }
+
+        // The implementation is not `const`, while instruction implementations usually are
+        strip_const_where_predicates(&mut where_clause.predicates);
+    }
+
+    let Some((trait_path, _)) = &item_impl.trait_ else {
+        return Err(anyhow::anyhow!(
+            "Expected `#[instruction] impl InstructionIsa for {enum_name}`, but no trait was found"
+        ));
+    };
+    let trait_path = trait_path.clone();
+
+    item_impl
+        .attrs
+        .insert(0, parse_quote! { #[automatically_derived] });
+    // Each expression is assigned to a separate variable, such that temporaries in expressions live
+    // long enough
+    let own_isa_extensions_vars = (0..all_own_isa_extensions.len())
+        .map(|index| format_ident!("own_isa_extensions_{index}"))
+        .collect::<Vec<_>>();
+    item_impl.items.push(parse_quote! {
+        const ISA_EXTENSIONS_STORAGE: ([IsaExtension; MAX_ISA_EXTENSIONS], usize) = {
+            #(
+                let #own_isa_extensions_vars: &[IsaExtension] = #all_own_isa_extensions;
+            )*
+            IsaExtension::canonical_set(&[
+                <Self as #trait_path>::OWN_ISA_EXTENSIONS,
+                #( #own_isa_extensions_vars, )*
+            ])
+        };
+    });
+
+    output_processed_enum_isa_impl(&enum_name, original_item_impl, item_impl, out_dir, state)
+}
+
+fn own_isa_extensions_from_impl(impl_items: &[ImplItem]) -> Option<&Expr> {
+    impl_items.iter().find_map(|item| {
+        if let ImplItem::Const(impl_item_const) = item
+            && impl_item_const.ident == "OWN_ISA_EXTENSIONS"
+        {
+            Some(&impl_item_const.expr)
+        } else {
+            None
+        }
+    })
+}
+
 /// Process remaining enums that were waiting for dependencies
 pub(super) fn process_pending_enum_impls(out_dir: &Path, state: &mut State) -> anyhow::Result<()> {
     {
@@ -792,6 +1064,32 @@ pub(super) fn process_pending_enum_impls(out_dir: &Path, state: &mut State) -> a
 
             for PendingEnumDisplayImpl { item_impl } in pending_enums {
                 process_enum_display_impl(item_impl, out_dir, state)?;
+            }
+        }
+    }
+    {
+        let mut last_pending_enums_count = 0;
+        loop {
+            let pending_enums = state.take_pending_enum_isa_impls();
+
+            if pending_enums.is_empty() {
+                break;
+            }
+
+            if pending_enums.len() == last_pending_enums_count {
+                return Err(anyhow::anyhow!(
+                    "Failed to process `#[instruction]` macro, circular dependency detected, \
+                    pending_enums: {:?}",
+                    pending_enums
+                        .iter()
+                        .map(|pending_enum| enum_name_from_impl(&pending_enum.item_impl))
+                        .collect::<Vec<_>>()
+                ));
+            }
+            last_pending_enums_count = pending_enums.len();
+
+            for PendingEnumIsaImpl { item_impl } in pending_enums {
+                process_enum_isa_impl(item_impl, out_dir, state)?;
             }
         }
     }

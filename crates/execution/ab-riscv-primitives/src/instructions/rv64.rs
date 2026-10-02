@@ -3,6 +3,7 @@
 pub mod a;
 pub mod b;
 pub mod c;
+pub mod d;
 pub mod m;
 #[cfg(test)]
 mod tests;
@@ -12,8 +13,9 @@ pub mod zalasr;
 pub mod zce;
 pub mod zk;
 
-use crate::instructions::Instruction;
+use crate::instructions::isa::{IsaExtension, MAX_ISA_EXTENSIONS};
 use crate::instructions::utils::{I24, I24WithZeroedBits};
+use crate::instructions::{Instruction, InstructionIsa};
 use crate::registers::general_purpose::Register;
 use ab_riscv_macros::instruction;
 use core::fmt;
@@ -350,6 +352,18 @@ where
     fn size(&self) -> u8 {
         size_of::<u32>() as u8
     }
+}
+
+#[instruction]
+impl<Reg, Cfg> InstructionIsa<Cfg> for Rv64Instruction<Reg>
+where
+    Reg: Register<Type = u64>,
+{
+    const OWN_ISA_EXTENSIONS: &'static [IsaExtension] = if Reg::RVE {
+        &[IsaExtension::new("e", 2, 0)]
+    } else {
+        &[IsaExtension::new("i", 2, 1)]
+    };
 }
 
 #[instruction]

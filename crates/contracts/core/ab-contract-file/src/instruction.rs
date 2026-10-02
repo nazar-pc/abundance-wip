@@ -241,6 +241,11 @@ const impl<Reg> Instruction for ContractInstruction<Reg> {
 }
 
 #[instruction]
+impl<Reg, Cfg> InstructionIsa<Cfg> for ContractInstruction<Reg> {
+    const OWN_ISA_EXTENSIONS: &'static [IsaExtension] = &[];
+}
+
+#[instruction]
 impl<Reg> fmt::Display for ContractInstruction<Reg>
 where
     Reg: Register,

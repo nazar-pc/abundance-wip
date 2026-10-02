@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests;
 
-use crate::instructions::Instruction;
+use crate::instructions::isa::{IsaExtension, MAX_ISA_EXTENSIONS};
 use crate::instructions::v::zvexx::ZveXxInstruction;
 use crate::instructions::v::zvexx::arith::ZveXxArithInstruction;
 use crate::instructions::v::zvexx::carry::ZveXxCarryInstruction;
@@ -16,8 +16,9 @@ use crate::instructions::v::zvexx::perm::ZveXxPermInstruction;
 use crate::instructions::v::zvexx::reduction::ZveXxReductionInstruction;
 use crate::instructions::v::zvexx::store::ZveXxStoreInstruction;
 use crate::instructions::v::zvexx::widen_narrow::ZveXxWidenNarrowInstruction;
-use crate::instructions::v::{Eew, V};
+use crate::instructions::v::{Eew, V, VectorLengths};
 use crate::instructions::zicsr::ZicsrInstruction;
+use crate::instructions::{Instruction, InstructionIsa};
 use crate::registers::general_purpose::Register;
 use crate::registers::vector::VReg;
 use ab_riscv_macros::instruction;
@@ -174,6 +175,14 @@ where
     fn size(&self) -> u8 {
         size_of::<u32>() as u8
     }
+}
+
+#[instruction]
+impl<Reg, Cfg> InstructionIsa<Cfg> for ZvkbInstruction<Reg>
+where
+    Reg: Register,
+{
+    const OWN_ISA_EXTENSIONS: &'static [IsaExtension] = &[IsaExtension::new("zvkb", 1, 0)];
 }
 
 #[instruction]

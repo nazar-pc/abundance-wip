@@ -3,9 +3,11 @@
 #[cfg(test)]
 mod tests;
 
-use crate::instructions::Instruction;
+use crate::instructions::isa::{IsaExtension, MAX_ISA_EXTENSIONS};
 use crate::instructions::rv32::c::zca::Rv32ZcaInstruction;
+use crate::instructions::rv32::f::Rv32F;
 use crate::instructions::utils::I24;
+use crate::instructions::{Instruction, InstructionIsa, implements_extension};
 use crate::registers::general_purpose::Register;
 use ab_riscv_macros::instruction;
 use core::fmt;
@@ -39,6 +41,14 @@ where
     fn size(&self) -> u8 {
         size_of::<u16>() as u8
     }
+}
+
+#[instruction]
+impl<Reg, Cfg> InstructionIsa<Cfg> for Rv32ZcbInstruction<Reg>
+where
+    Reg: Register<Type = u32>,
+{
+    const OWN_ISA_EXTENSIONS: &'static [IsaExtension] = &[IsaExtension::new("zcb", 1, 0)];
 }
 
 #[instruction]
@@ -216,6 +226,14 @@ where
     fn size(&self) -> u8 {
         size_of::<u16>() as u8
     }
+}
+
+#[instruction]
+impl<Reg, Cfg> InstructionIsa<Cfg> for Rv32ZcbOnlyInstruction<Reg>
+where
+    Reg: Register<Type = u32>,
+{
+    const OWN_ISA_EXTENSIONS: &'static [IsaExtension] = &[];
 }
 
 #[instruction]

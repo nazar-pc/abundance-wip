@@ -110,6 +110,62 @@ impl InstructionVariantItem {
     }
 }
 
+/// Instructions ignored explicitly by name in `#[instruction(ignore = [...])]` attribute of the
+/// original enum definition, as opposed to instructions of enums that were ignored as a whole.
+///
+/// `ignored_instructions` contains all ignored instructions with whole enums already expanded into
+/// individual instructions, so enum names never match it.
+pub(super) fn ignored_instruction_variants(
+    original_item_enum: &ItemEnum,
+    ignored_instructions: &HashSet<Ident>,
+) -> anyhow::Result<HashSet<Ident>> {
+    let mut ignored_instruction_variants = HashSet::new();
+
+    for attribute in &original_item_enum.attrs {
+        if !attribute.path().is_ident("instruction") {
+            continue;
+        }
+        let Meta::List(meta_list) = &attribute.meta else {
+            continue;
+        };
+
+        let instruction_definition = parse2::<InstructionDefinition>(meta_list.tokens.clone())
+            .with_context(|| {
+                format!(
+                    "Failed to parse `#[instruction(...)]` attribute of {}",
+                    original_item_enum.ident
+                )
+            })?;
+        for item in instruction_definition.items {
+            if let InstructionDefinitionItem::Ignore(ignore_items) = item {
+                ignored_instruction_variants.extend(
+                    ignore_items
+                        .into_iter()
+                        .filter(|ignore_item| ignored_instructions.contains(ignore_item)),
+                );
+            }
+        }
+    }
+
+    Ok(ignored_instruction_variants)
+}
+
+/// Whether an instruction has conditions for its enablement in `#[instruction(if = [...])]`
+/// attribute
+pub(super) fn has_enablement_conditions(instruction: &Variant) -> bool {
+    instruction.attrs.iter().any(|attribute| {
+        if !attribute.path().is_ident("instruction") {
+            return false;
+        }
+        let Meta::List(meta_list) = &attribute.meta else {
+            return false;
+        };
+
+        parse2::<InstructionVariant>(meta_list.tokens.clone())
+            .is_ok_and(|instruction_variant| !instruction_variant.items.is_empty())
+    })
+}
+
 #[derive(Debug)]
 struct KnownInstruction {
     instruction: Rc<Variant>,

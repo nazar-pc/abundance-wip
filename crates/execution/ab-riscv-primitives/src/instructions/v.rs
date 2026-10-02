@@ -5,6 +5,7 @@ mod tests;
 pub mod zvexx;
 
 use crate::instructions::Instruction;
+use crate::instructions::isa::IsaExtension;
 use crate::registers::general_purpose::{RegType, Register};
 use core::any::TypeId;
 use core::hint::{assert_unchecked, cold_path};
@@ -252,6 +253,54 @@ pub trait VectorLengths {
     const ELEN: Elen;
     /// Vector register width `VLEN` in bits
     const VLEN: Vlen;
+    /// ISA extensions that correspond to `ELEN` and `VLEN`.
+    ///
+    /// Like compilers do, in addition to `zve32x` and `zve64x` (for `ELEN >= 64`), this includes
+    /// `zvl*b` extensions for all vector lengths up to `VLEN`.
+    const ISA_EXTENSIONS: &'static [IsaExtension] = {
+        let (isa_extensions, len): &'static (_, usize) =
+            &vector_isa_extensions(Self::ELEN, Self::VLEN);
+        let (isa_extensions, _) = isa_extensions.split_at(*len);
+        isa_extensions
+    };
+}
+
+const fn vector_isa_extensions(elen: Elen, vlen: Vlen) -> ([IsaExtension; 14], usize) {
+    const ZVL_EXTENSIONS: [(Vlen, &str); 12] = [
+        (Vlen::L32, "zvl32b"),
+        (Vlen::L64, "zvl64b"),
+        (Vlen::L128, "zvl128b"),
+        (Vlen::L256, "zvl256b"),
+        (Vlen::L512, "zvl512b"),
+        (Vlen::L1024, "zvl1024b"),
+        (Vlen::L2048, "zvl2048b"),
+        (Vlen::L4096, "zvl4096b"),
+        (Vlen::L8192, "zvl8192b"),
+        (Vlen::L16_384, "zvl16384b"),
+        (Vlen::L32_768, "zvl32768b"),
+        (Vlen::L65_536, "zvl65536b"),
+    ];
+
+    let mut isa_extensions = [IsaExtension::new("", 0, 0); 14];
+    isa_extensions[0] = IsaExtension::new("zve32x", 1, 0);
+    let mut len = 1;
+    if u32::from(elen) >= u32::from(Elen::L64) {
+        isa_extensions[len] = IsaExtension::new("zve64x", 1, 0);
+        len += 1;
+    }
+
+    // For loops are not yet usable in const environment
+    let mut index = 0;
+    while index < ZVL_EXTENSIONS.len() {
+        let (zvl_vlen, name) = ZVL_EXTENSIONS[index];
+        if u32::from(zvl_vlen) <= u32::from(vlen) {
+            isa_extensions[len] = IsaExtension::new(name, 1, 0);
+            len += 1;
+        }
+        index += 1;
+    }
+
+    (isa_extensions, len)
 }
 
 /// Assertion for supported ELEN + VLEN combinations, to be used in `where` bounds (panics on

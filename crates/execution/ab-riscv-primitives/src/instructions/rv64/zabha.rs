@@ -3,8 +3,9 @@
 #[cfg(test)]
 mod tests;
 
-use crate::instructions::Instruction;
+use crate::instructions::isa::{IsaExtension, MAX_ISA_EXTENSIONS};
 use crate::instructions::rv64::a::zaamo::Rv64ZaamoInstruction;
+use crate::instructions::{Instruction, InstructionIsa};
 use crate::registers::general_purpose::Register;
 use ab_riscv_macros::instruction;
 use core::fmt;
@@ -228,6 +229,14 @@ where
     fn size(&self) -> u8 {
         size_of::<u32>() as u8
     }
+}
+
+#[instruction]
+impl<Reg, Cfg> InstructionIsa<Cfg> for Rv64ZabhaInstruction<Reg>
+where
+    Reg: Register<Type = u64>,
+{
+    const OWN_ISA_EXTENSIONS: &'static [IsaExtension] = &[IsaExtension::new("zabha", 1, 0)];
 }
 
 /// Format `aq`/`rl` suffix for display

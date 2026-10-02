@@ -23,7 +23,7 @@ pub mod store;
 #[doc(hidden)]
 pub mod widen_narrow;
 
-use crate::instructions::Instruction;
+use crate::instructions::isa::{IsaExtension, MAX_ISA_EXTENSIONS};
 use crate::instructions::v::zvexx::arith::ZveXxArithInstruction;
 use crate::instructions::v::zvexx::carry::ZveXxCarryInstruction;
 use crate::instructions::v::zvexx::config::ZveXxConfigInstruction;
@@ -35,8 +35,9 @@ use crate::instructions::v::zvexx::perm::ZveXxPermInstruction;
 use crate::instructions::v::zvexx::reduction::ZveXxReductionInstruction;
 use crate::instructions::v::zvexx::store::ZveXxStoreInstruction;
 use crate::instructions::v::zvexx::widen_narrow::ZveXxWidenNarrowInstruction;
-use crate::instructions::v::{Eew, V};
+use crate::instructions::v::{Eew, V, VectorLengths};
 use crate::instructions::zicsr::ZicsrInstruction;
+use crate::instructions::{Instruction, InstructionIsa};
 use crate::registers::general_purpose::Register;
 use crate::registers::vector::VReg;
 use ab_riscv_macros::instruction;
@@ -86,6 +87,15 @@ where
     fn size(&self) -> u8 {
         size_of::<u32>() as u8
     }
+}
+
+#[instruction]
+impl<Reg, Cfg> InstructionIsa<Cfg> for ZveXxInstruction<Reg>
+where
+    Reg: Register,
+    Cfg: VectorLengths,
+{
+    const OWN_ISA_EXTENSIONS: &'static [IsaExtension] = Cfg::ISA_EXTENSIONS;
 }
 
 #[instruction]

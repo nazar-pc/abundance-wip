@@ -9,7 +9,8 @@ use crate::build::enum_definition::{
     process_pending_enum_definitions,
 };
 use crate::build::enum_impl::{
-    collect_original_enum_decoding_impls_from_dependencies, process_enum_impl,
+    collect_original_enum_decoding_impls_from_dependencies,
+    collect_original_enum_isa_impls_from_dependencies, process_enum_impl,
     process_pending_enum_impls,
 };
 use crate::build::execution_impl::{
@@ -61,6 +62,10 @@ pub fn process_instruction_macros() -> anyhow::Result<()> {
     for maybe_enum_impl in collect_original_enum_decoding_impls_from_dependencies() {
         let (item_impl, source) = maybe_enum_impl?;
         state.insert_known_original_enum_decoding_impl(item_impl, source)?;
+    }
+    for maybe_enum_isa_impl in collect_original_enum_isa_impls_from_dependencies() {
+        let (item_impl, source) = maybe_enum_isa_impl?;
+        state.insert_known_original_enum_isa_impl(item_impl, source)?;
     }
     for maybe_enum_csr_impl in collect_enum_csr_impls_from_dependencies() {
         let (item_impl, source) = maybe_enum_csr_impl?;

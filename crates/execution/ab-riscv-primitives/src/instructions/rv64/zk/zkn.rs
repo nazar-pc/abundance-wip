@@ -4,7 +4,7 @@ pub mod zknd;
 pub mod zkne;
 pub mod zknh;
 
-use crate::instructions::Instruction;
+use crate::instructions::isa::{IsaExtension, MAX_ISA_EXTENSIONS};
 use crate::instructions::rv64::b::zbb::{Rv64ZbbInstruction, Rv64ZbbZbkbSharedInstruction};
 use crate::instructions::rv64::zk::zbkb::Rv64ZbkbInstruction;
 use crate::instructions::rv64::zk::zbkc::Rv64ZbkcInstruction;
@@ -14,6 +14,7 @@ use crate::instructions::rv64::zk::zkn::zknd::{
 };
 use crate::instructions::rv64::zk::zkn::zkne::Rv64ZkneInstruction;
 use crate::instructions::rv64::zk::zkn::zknh::Rv64ZknhInstruction;
+use crate::instructions::{Instruction, InstructionIsa};
 use crate::registers::general_purpose::Register;
 use ab_riscv_macros::instruction;
 use core::fmt;
@@ -52,6 +53,14 @@ where
     fn size(&self) -> u8 {
         size_of::<u32>() as u8
     }
+}
+
+#[instruction]
+impl<Reg, Cfg> InstructionIsa<Cfg> for Rv64ZknInstruction<Reg>
+where
+    Reg: Register<Type = u64>,
+{
+    const OWN_ISA_EXTENSIONS: &'static [IsaExtension] = &[IsaExtension::new("zkn", 1, 0)];
 }
 
 #[instruction]

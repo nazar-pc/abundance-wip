@@ -1,6 +1,6 @@
 //! Re-export of all public items from the crate
 
-pub use crate::instructions::Instruction;
+pub use crate::instructions::isa::{IsaExtension, MAX_ISA_EXTENSIONS, MAX_ISA_STRING_LENGTH};
 pub use crate::instructions::rv32::Rv32Instruction;
 pub use crate::instructions::rv32::a::Rv32AInstruction;
 pub use crate::instructions::rv32::a::zaamo::Rv32ZaamoInstruction;
@@ -11,6 +11,7 @@ pub use crate::instructions::rv32::b::zbb::{Rv32ZbbInstruction, Rv32ZbbZbkbShare
 pub use crate::instructions::rv32::b::zbc::Rv32ZbcInstruction;
 pub use crate::instructions::rv32::b::zbs::Rv32ZbsInstruction;
 pub use crate::instructions::rv32::c::zca::Rv32ZcaInstruction;
+pub use crate::instructions::rv32::f::Rv32F;
 pub use crate::instructions::rv32::m::Rv32MInstruction;
 pub use crate::instructions::rv32::m::zmmul::Rv32ZmmulInstruction;
 pub use crate::instructions::rv32::zabha::Rv32ZabhaInstruction;
@@ -37,6 +38,7 @@ pub use crate::instructions::rv64::b::zbb::{Rv64ZbbInstruction, Rv64ZbbZbkbShare
 pub use crate::instructions::rv64::b::zbc::Rv64ZbcInstruction;
 pub use crate::instructions::rv64::b::zbs::Rv64ZbsInstruction;
 pub use crate::instructions::rv64::c::zca::Rv64ZcaInstruction;
+pub use crate::instructions::rv64::d::Rv64D;
 pub use crate::instructions::rv64::m::Rv64MInstruction;
 pub use crate::instructions::rv64::m::zmmul::Rv64ZmmulInstruction;
 pub use crate::instructions::rv64::zabha::Rv64ZabhaInstruction;
@@ -78,6 +80,7 @@ pub use crate::instructions::zkr::{SEED_CSR_INDEX, ZkrInstruction};
 pub use crate::instructions::zvbb::ZvbbInstruction;
 pub use crate::instructions::zvbb::zvkb::ZvkbInstruction;
 pub use crate::instructions::zvbc::ZvbcInstruction;
+pub use crate::instructions::{Instruction, InstructionIsa, implements_extension};
 pub use crate::privilege::*;
 pub use crate::registers::general_purpose::*;
 pub use crate::registers::machine::*;
