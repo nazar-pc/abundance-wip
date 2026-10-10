@@ -31,7 +31,6 @@ pub(super) const fn type_name(mut metadata: &[u8]) -> Option<&[u8]> {
             metadata.get(..usize::from(type_name_length))?
         }
         IoTypeMetadataKind::Array => b"[T; N]",
-        IoTypeMetadataKind::VariableBytes => b"VariableBytes",
         IoTypeMetadataKind::VariableElements => b"VariableElements",
         IoTypeMetadataKind::FixedCapacityBytes8b | IoTypeMetadataKind::FixedCapacityBytes16b => {
             b"FixedCapacityBytes"

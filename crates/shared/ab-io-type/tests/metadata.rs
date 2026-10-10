@@ -421,25 +421,18 @@ fn fixed_capacity_bytes_and_strings() {
 
 #[test]
 fn variable_bytes() {
-    let name = "VariableBytes";
+    // `VariableBytes` is `VariableElements<u8>`
+    let name = "VariableElements";
 
-    // The recommended allocation is always encoded in 4 bytes, there are no dedicated kinds for
-    // specific values
-    let expected = Expected::new(Kind::VariableBytes).u32(0);
+    let expected = Expected::new(Kind::VariableElements).u32(0).kind(Kind::U8);
     check_io_type::<VariableBytes<0>>(name, 0, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes).u32(1);
-    check_io_type::<VariableBytes<1>>(name, 1, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes).u32(255);
-    check_io_type::<VariableBytes<255>>(name, 255, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes).u32(256);
-    check_io_type::<VariableBytes<256>>(name, 256, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes).u32(1024);
+    let expected = Expected::new(Kind::VariableElements)
+        .u32(1024)
+        .kind(Kind::U8);
     check_io_type::<VariableBytes<1024>>(name, 1024, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes).u32(2048);
-    check_io_type::<VariableBytes<2048>>(name, 2048, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes).u32(65_536);
-    check_io_type::<VariableBytes<65_536>>(name, 65_536, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes).u32(1_048_576);
+    let expected = Expected::new(Kind::VariableElements)
+        .u32(1_048_576)
+        .kind(Kind::U8);
     check_io_type::<VariableBytes<1_048_576>>(name, 1_048_576, 1, &expected, &expected);
 }
 

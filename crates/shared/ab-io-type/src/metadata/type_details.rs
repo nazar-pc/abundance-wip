@@ -70,13 +70,6 @@ pub(super) const fn decode_type_details(mut metadata: &[u8]) -> Option<(IoTypeDe
                 metadata,
             ))
         }
-        IoTypeMetadataKind::VariableBytes => {
-            let num_bytes;
-            (num_bytes, metadata) = metadata.split_first_chunk()?;
-            let num_bytes = u32::from_le_bytes(*num_bytes);
-
-            Some((IoTypeDetails::bytes(num_bytes), metadata))
-        }
         IoTypeMetadataKind::FixedCapacityBytes8b | IoTypeMetadataKind::FixedCapacityString8b => {
             let num_bytes = *metadata.split_off_first()?;
 

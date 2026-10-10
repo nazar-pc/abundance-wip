@@ -148,12 +148,8 @@ pub enum IoTypeMetadataKind {
     /// * 4 bytes number of elements (little-endian)
     /// * Recursive metadata of a contained type
     Array,
+    /// [`VariableElements`](crate::variable_elements::VariableElements), including
     /// [`VariableBytes`](crate::variable_bytes::VariableBytes).
-    ///
-    /// Encoded as follows:
-    /// * 4 bytes recommended allocation in bytes (little-endian)
-    VariableBytes,
-    /// [`VariableElements`](crate::variable_elements::VariableElements).
     ///
     /// Encoded as follows:
     /// * 4 bytes recommended allocation in elements (little-endian)
@@ -217,13 +213,12 @@ const impl TryFrom<u8> for IoTypeMetadataKind {
             14 => Self::Enum,
             15 => Self::EnumNoFields,
             16 => Self::Array,
-            17 => Self::VariableBytes,
-            18 => Self::VariableElements,
-            19 => Self::FixedCapacityBytes8b,
-            20 => Self::FixedCapacityBytes16b,
-            21 => Self::FixedCapacityString8b,
-            22 => Self::FixedCapacityString16b,
-            23 => Self::Unaligned,
+            17 => Self::VariableElements,
+            18 => Self::FixedCapacityBytes8b,
+            19 => Self::FixedCapacityBytes16b,
+            20 => Self::FixedCapacityString8b,
+            21 => Self::FixedCapacityString16b,
+            22 => Self::Unaligned,
             _ => {
                 return Err(());
             }

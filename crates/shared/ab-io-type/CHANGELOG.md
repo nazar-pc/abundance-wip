@@ -21,17 +21,21 @@ Breaking changes:
   fields encoded as `Enum` instead of `EnumNoFields`, so each type has exactly one encoding now and the same type always
   has the same compact metadata, previously decoders accepted several encodings of the same type, like `Array16b` with 5
   elements next to `Array8b`. `Struct0`..`Struct10`, `TupleStruct1`..`TupleStruct10`, `Enum1`..`Enum10`,
-  `EnumNoFields1`..`EnumNoFields10`, `ArrayU8x8`..`ArrayU8x4096`, `VariableBytes0`..`VariableBytes1048576` and
-  `VariableElements0` are removed, structs and enums always encode the number of fields and variants.
-  `Array8b`..`Array32b`, `VariableBytes8b`..`VariableBytes32b` and `VariableElements8b`..`VariableElements32b` are
-  replaced with `Array`, `VariableBytes` and `VariableElements`, which encode the number of elements or recommended
-  allocation in 4 bytes. Remaining kinds are renumbered, so `METADATA` of structs, enums, arrays, `VariableBytes`,
-  `VariableElements`, fixed capacity bytes and strings and `Unaligned` changes, and so do fingerprints of methods that
-  use them. `IoTypeMetadataKind::compact()` turns all structs into tuple structs, previously structs with more than 10
-  named fields kept the `Struct` kind with field names removed, which is not valid metadata and differs from compact
-  metadata of a tuple struct with the same fields
+  `EnumNoFields1`..`EnumNoFields10`, `ArrayU8x8`..`ArrayU8x4096` and `VariableElements0` are removed, structs and enums
+  always encode the number of fields and variants. `Array8b`..`Array32b` and `VariableElements8b`..`VariableElements32b`
+  are replaced with `Array` and `VariableElements`, which encode the number of elements or recommended allocation in 4
+  bytes. Remaining kinds are renumbered, so `METADATA` of structs, enums, arrays, `VariableElements`, fixed capacity
+  bytes and strings and `Unaligned` changes, and so do fingerprints of methods that use them.
+  `IoTypeMetadataKind::compact()` turns all structs into tuple structs, previously structs with more than 10 named
+  fields kept the `Struct` kind with field names removed, which is not valid metadata and differs from compact metadata
+  of a tuple struct with the same fields
 * `IoTypeMetadataKind::type_name()` returns `None` for metadata that `IoTypeMetadataKind::type_details()` rejects,
   previously it returned a name without decoding the rest of the metadata
+* `VariableBytes` is now an alias of `VariableElements<u8>` instead of a separate type with the same API. Its `METADATA`
+  is that of `VariableElements<u8>` (`VariableBytes0`..`VariableBytes1048576` and `VariableBytes8b`..`VariableBytes32b`
+  metadata kinds are removed), so fingerprints of methods that use it change. `copy_from()` only copies from an instance
+  of the same type, previously it accepted any `IoType`. `Debug` output and compiler diagnostics show
+  `VariableElements<u8>`, and implementations of a trait for both `VariableBytes` and `VariableElements` now conflict
 * Derived `TrivialType` of structs with braces and no fields (`struct S {}`) uses the `Struct` metadata kind, previously
   it used `TupleStruct`, because named fields were detected by the first field. Compact metadata is the same either
   way, since structs turn into tuple structs in it

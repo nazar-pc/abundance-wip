@@ -45,10 +45,6 @@ pub(super) const fn compact_metadata<'i, 'o>(
             (input, output) = copy_n_bytes(input, output, size_of::<u32>())?;
             (input, output) = compact_metadata(input, output)?;
         }
-        IoTypeMetadataKind::VariableBytes => {
-            *io_type_metadata_kind_output = io_type_metadata_kind_input;
-            (input, output) = copy_n_bytes(input, output, size_of::<u32>())?;
-        }
         IoTypeMetadataKind::FixedCapacityBytes8b | IoTypeMetadataKind::FixedCapacityString8b => {
             *io_type_metadata_kind_output = io_type_metadata_kind_input;
             (input, output) = copy_n_bytes(input, output, size_of::<u8>())?;

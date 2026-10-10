@@ -1,6 +1,6 @@
+use crate::IoType;
 use crate::maybe_data::MaybeData;
 use crate::trivial_type::TrivialType;
-use crate::variable_bytes::VariableBytes;
 use core::mem::MaybeUninit;
 
 #[test]
@@ -19,18 +19,12 @@ fn from_mut() {
         assert_eq!(maybe_data.get(), Some(&1));
     }
 
-    // Size that is neither zero nor the size of data, users of `IoType` like
-    // `VariableBytes::copy_from()` would read past `data` otherwise
+    // Size that is neither zero nor the size of data, users of `IoType` that read `IoType::size()`
+    // bytes from `IoType::as_ptr()` would read past `data` otherwise
     {
         let mut size = 2 * u64::SIZE;
         let maybe_data = MaybeData::from_mut(&mut data, &mut size);
-        let copied = maybe_data.as_deref().map(|maybe_data| {
-            let mut buffer = [MaybeUninit::uninit(); 16];
-            let mut buffer_size = 0;
-            let mut bytes = VariableBytes::<0>::from_uninit(&mut buffer, &mut buffer_size).unwrap();
-            bytes.copy_from(maybe_data)
-        });
-        assert_eq!(copied, None);
+        assert_eq!(maybe_data.as_deref().map(IoType::size), None);
     }
 }
 
