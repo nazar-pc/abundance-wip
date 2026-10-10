@@ -13,6 +13,7 @@ Fixes:
   previously they overwrote the beginning of contents without changing the length
 * `VariableElements::copy_from()` no longer reads and writes out of bounds, previously it used the size in bytes as the
   number of elements to copy
+* `VariableElements::count()` now returns the number of elements, previously it returned the size in bytes
 
 # 0.2.0
 
