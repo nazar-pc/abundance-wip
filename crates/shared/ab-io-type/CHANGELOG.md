@@ -1,4 +1,10 @@
-# 0.2.1
+# 0.3.0
+
+Breaking changes:
+
+* `IoType::as_ptr()` and `IoType::as_mut_ptr()` are now safe and return `NonNull` by value instead of a reference to
+  the internal pointer, `VariableBytes::as_mut_ptr()` and `VariableElements::as_mut_ptr()` also return `NonNull` now,
+  previously they returned `&mut NonNull`, which allowed safe code to point an instance to arbitrary memory
 
 Fixes:
 

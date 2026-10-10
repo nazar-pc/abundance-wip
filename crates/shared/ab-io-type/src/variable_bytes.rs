@@ -153,13 +153,13 @@ unsafe impl<const RECOMMENDED_ALLOCATION: u32> IoType for VariableBytes<RECOMMEN
     }
 
     #[inline(always)]
-    unsafe fn as_ptr(&self) -> impl Deref<Target = NonNull<Self::PointerType>> {
-        &self.bytes
+    fn as_ptr(&self) -> NonNull<Self::PointerType> {
+        self.bytes
     }
 
     #[inline(always)]
-    unsafe fn as_mut_ptr(&mut self) -> impl DerefMut<Target = NonNull<Self::PointerType>> {
-        &mut self.bytes
+    fn as_mut_ptr(&mut self) -> NonNull<Self::PointerType> {
+        self.bytes
     }
 }
 
@@ -351,13 +351,13 @@ impl<const RECOMMENDED_ALLOCATION: u32> VariableBytes<RECOMMENDED_ALLOCATION> {
         true
     }
 
-    /// Get exclusive access to the underlying pointer with no checks.
+    /// Get an exclusive raw pointer to the underlying memory.
     ///
     /// Can be used for initialization with [`Self::assume_init()`] called afterward to confirm how
     /// many bytes are in use right now.
     #[inline(always)]
-    pub fn as_mut_ptr(&mut self) -> &mut NonNull<u8> {
-        &mut self.bytes
+    pub fn as_mut_ptr(&mut self) -> NonNull<u8> {
+        self.bytes
     }
 
     /// Cast a shared reference to this instance into a reference to an instance of a different
