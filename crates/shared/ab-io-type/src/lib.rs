@@ -73,6 +73,7 @@
 
 pub mod bool;
 pub mod fixed_capacity_bytes;
+pub mod fixed_capacity_elements;
 pub mod fixed_capacity_string;
 pub mod maybe_data;
 pub mod metadata;

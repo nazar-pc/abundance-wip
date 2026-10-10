@@ -6,8 +6,9 @@
 #![expect(dead_code, reason = "Types are only defined for their metadata")]
 
 use ab_io_type::bool::Bool;
-use ab_io_type::fixed_capacity_bytes::{FixedCapacityBytesU8, FixedCapacityBytesU16};
-use ab_io_type::fixed_capacity_string::{FixedCapacityStringU8, FixedCapacityStringU16};
+use ab_io_type::fixed_capacity_bytes::FixedCapacityBytes;
+use ab_io_type::fixed_capacity_elements::FixedCapacityElements;
+use ab_io_type::fixed_capacity_string::FixedCapacityString;
 use ab_io_type::maybe_data::MaybeData;
 use ab_io_type::metadata::{IoTypeMetadataKind as Kind, MAX_METADATA_CAPACITY};
 use ab_io_type::trivial_type::TrivialType;
@@ -420,18 +421,146 @@ fn unaligned() {
 }
 
 #[test]
-fn fixed_capacity_bytes_and_strings() {
-    let expected = Expected::new(Kind::FixedCapacityBytes8b).byte(10);
-    check_trivial_type::<FixedCapacityBytesU8<10>>("FixedCapacityBytes", &expected, &expected);
+fn fixed_capacity_elements() {
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(C)]
+    struct Wide {
+        a: u64,
+        b: u32,
+        c: u32,
+    }
 
-    let expected = Expected::new(Kind::FixedCapacityBytes16b).u16(300);
-    check_trivial_type::<FixedCapacityBytesU16<300>>("FixedCapacityBytes", &expected, &expected);
+    let name = "FixedCapacityElements";
 
-    let expected = Expected::new(Kind::FixedCapacityString8b).byte(10);
-    check_trivial_type::<FixedCapacityStringU8<10>>("FixedCapacityString", &expected, &expected);
+    // `FixedCapacityBytes` is `FixedCapacityElements<u8>`
+    let expected = Expected::new(Kind::FixedCapacityElements)
+        .u32(0)
+        .kind(Kind::U8);
+    check_trivial_type::<FixedCapacityBytes<0>>(name, &expected, &expected);
+    let expected = Expected::new(Kind::FixedCapacityElements)
+        .u32(10)
+        .kind(Kind::U8);
+    check_trivial_type::<FixedCapacityBytes<10>>(name, &expected, &expected);
+    let expected = Expected::new(Kind::FixedCapacityElements)
+        .u32(70_000)
+        .kind(Kind::U8);
+    check_trivial_type::<FixedCapacityBytes<70_000>>(name, &expected, &expected);
+    // The largest size
+    let expected = Expected::new(Kind::FixedCapacityElements)
+        .u32(u32::MAX - 4)
+        .kind(Kind::U8);
+    check_trivial_type::<FixedCapacityBytes<{ u32::MAX as usize - 4 }>>(name, &expected, &expected);
 
-    let expected = Expected::new(Kind::FixedCapacityString16b).u16(300);
-    check_trivial_type::<FixedCapacityStringU16<300>>("FixedCapacityString", &expected, &expected);
+    // The length is extended to the alignment of elements, which is the alignment of the container
+    let expected = Expected::new(Kind::FixedCapacityElements)
+        .u32(3)
+        .kind(Kind::U16);
+    check_trivial_type::<FixedCapacityElements<u16, 3>>(name, &expected, &expected);
+    let expected = Expected::new(Kind::FixedCapacityElements)
+        .u32(3)
+        .kind(Kind::U32);
+    check_trivial_type::<FixedCapacityElements<u32, 3>>(name, &expected, &expected);
+    let expected = Expected::new(Kind::FixedCapacityElements)
+        .u32(3)
+        .kind(Kind::U64);
+    check_trivial_type::<FixedCapacityElements<u64, 3>>(name, &expected, &expected);
+    let expected = Expected::new(Kind::FixedCapacityElements)
+        .u32(0)
+        .kind(Kind::U128);
+    check_trivial_type::<FixedCapacityElements<u128, 0>>(name, &expected, &expected);
+    let expected = Expected::new(Kind::FixedCapacityElements)
+        .u32(3)
+        .kind(Kind::U128);
+    check_trivial_type::<FixedCapacityElements<u128, 3>>(name, &expected, &expected);
+    // The largest capacity, the size is `u32::MAX - 15`
+    let expected = Expected::new(Kind::FixedCapacityElements)
+        .u32((1 << 28) - 2)
+        .kind(Kind::U128);
+    check_trivial_type::<FixedCapacityElements<u128, { (1 << 28) - 2 }>>(
+        name, &expected, &expected,
+    );
+    let expected = Expected::new(Kind::FixedCapacityElements)
+        .u32(3)
+        .kind(Kind::Array)
+        .u32(2)
+        .kind(Kind::U64);
+    check_trivial_type::<FixedCapacityElements<[u64; 2], 3>>(name, &expected, &expected);
+    let expected = Expected::new(Kind::FixedCapacityElements)
+        .u32(3)
+        .kind(Kind::Unaligned)
+        .kind(Kind::U64);
+    check_trivial_type::<FixedCapacityElements<Unaligned<u64>, 3>>(name, &expected, &expected);
+
+    let (point, point_compact) = point();
+    let expected = Expected::new(Kind::FixedCapacityElements)
+        .u32(5)
+        .nested(&point);
+    let expected_compact = Expected::new(Kind::FixedCapacityElements)
+        .u32(5)
+        .nested(&point_compact);
+    check_trivial_type::<FixedCapacityElements<Point, 5>>(name, &expected, &expected_compact);
+
+    let wide = Expected::new(Kind::Struct)
+        .name("Wide")
+        .byte(3)
+        .name("a")
+        .kind(Kind::U64)
+        .name("b")
+        .kind(Kind::U32)
+        .name("c")
+        .kind(Kind::U32);
+    let wide_compact = Expected::new(Kind::TupleStruct)
+        .name("")
+        .byte(3)
+        .kind(Kind::U64)
+        .kind(Kind::U32)
+        .kind(Kind::U32);
+    let expected = Expected::new(Kind::FixedCapacityElements)
+        .u32(3)
+        .nested(&wide);
+    let expected_compact = Expected::new(Kind::FixedCapacityElements)
+        .u32(3)
+        .nested(&wide_compact);
+    check_trivial_type::<FixedCapacityElements<Wide, 3>>(name, &expected, &expected_compact);
+
+    // Zero-sized elements only take space for the length
+    let expected = Expected::new(Kind::FixedCapacityElements)
+        .u32(3)
+        .kind(Kind::Unit);
+    check_trivial_type::<FixedCapacityElements<(), 3>>(name, &expected, &expected);
+
+    // Nested in other types
+    let expected = Expected::new(Kind::Array)
+        .u32(2)
+        .kind(Kind::FixedCapacityElements)
+        .u32(3)
+        .kind(Kind::U64);
+    check_trivial_type::<[FixedCapacityElements<u64, 3>; 2]>("[T; N]", &expected, &expected);
+    let expected = Expected::new(Kind::FixedCapacityElements)
+        .u32(2)
+        .kind(Kind::FixedCapacityElements)
+        .u32(3)
+        .kind(Kind::U8);
+    check_trivial_type::<FixedCapacityElements<FixedCapacityBytes<3>, 2>>(
+        name, &expected, &expected,
+    );
+}
+
+#[test]
+fn fixed_capacity_string() {
+    let name = "FixedCapacityString";
+
+    let expected = Expected::new(Kind::FixedCapacityString).u32(0);
+    check_trivial_type::<FixedCapacityString<0>>(name, &expected, &expected);
+    let expected = Expected::new(Kind::FixedCapacityString).u32(10);
+    check_trivial_type::<FixedCapacityString<10>>(name, &expected, &expected);
+    let expected = Expected::new(Kind::FixedCapacityString).u32(70_000);
+    check_trivial_type::<FixedCapacityString<70_000>>(name, &expected, &expected);
+    // The largest size
+    let expected = Expected::new(Kind::FixedCapacityString).u32(u32::MAX - 4);
+    check_trivial_type::<FixedCapacityString<{ u32::MAX as usize - 4 }>>(
+        name, &expected, &expected,
+    );
 }
 
 #[test]
@@ -735,6 +864,7 @@ fn named_and_tuple_forms_compact_equally() {
     check_same_compact::<MaybeData<Named2>, MaybeData<Tuple2>>();
     check_same_compact::<VariableElements<Named2>, VariableElements<Tuple2>>();
     check_same_compact::<VariableElements<Named11, 300>, VariableElements<Tuple11, 300>>();
+    check_same_compact::<FixedCapacityElements<Named2, 3>, FixedCapacityElements<Tuple2, 3>>();
     check_same_compact::<EnumOfNamed, EnumOfTuple>();
     check_same_compact::<OuterNamed, OuterTuple>();
 }
@@ -1244,6 +1374,37 @@ fn capacity_overflow_is_rejected() {
             .u32(1 << 31)
             .kind(Kind::U16),
     );
+
+    // Capacity of elements plus the length
+    check_max_capacity(
+        &Expected::new(Kind::FixedCapacityElements)
+            .u32(u32::MAX - 4)
+            .kind(Kind::U8),
+    );
+    check_capacity_overflow(
+        &Expected::new(Kind::FixedCapacityElements)
+            .u32(u32::MAX - 3)
+            .kind(Kind::U8),
+    );
+    check_capacity_overflow(
+        &Expected::new(Kind::FixedCapacityElements)
+            .u32(u32::MAX)
+            .kind(Kind::U8),
+    );
+    // The length takes 16 bytes with `u128` elements, so `(1 << 28) - 2` elements is the largest
+    // capacity, see `fixed_capacity_elements()`
+    check_capacity_overflow(
+        &Expected::new(Kind::FixedCapacityElements)
+            .u32((1 << 28) - 1)
+            .kind(Kind::U128),
+    );
+    check_capacity_overflow(
+        &Expected::new(Kind::FixedCapacityElements)
+            .u32(1 << 31)
+            .kind(Kind::U16),
+    );
+    check_max_capacity(&Expected::new(Kind::FixedCapacityString).u32(u32::MAX - 4));
+    check_capacity_overflow(&Expected::new(Kind::FixedCapacityString).u32(u32::MAX - 3));
 
     // Sum of capacities of fields
     check_max_capacity(&pair_with_byte(&bytes(u32::MAX - 1)));

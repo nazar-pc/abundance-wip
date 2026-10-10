@@ -1,4 +1,5 @@
 use crate::metadata::{IoTypeDetails, IoTypeMetadataKind};
+use crate::trivial_type::TrivialType;
 use core::num::NonZeroU8;
 
 #[inline(always)]
@@ -70,31 +71,41 @@ pub(super) const fn decode_type_details(mut metadata: &[u8]) -> Option<(IoTypeDe
                 metadata,
             ))
         }
-        IoTypeMetadataKind::FixedCapacityBytes8b | IoTypeMetadataKind::FixedCapacityString8b => {
-            let num_bytes = *metadata.split_off_first()?;
-            // Length is stored in `u8`
-            let recommended_capacity = u32::from(num_bytes).checked_add(size_of::<u8>() as u32)?;
+        IoTypeMetadataKind::FixedCapacityElements => {
+            let capacity;
+            (capacity, metadata) = metadata.split_first_chunk()?;
+            let capacity = u32::from_le_bytes(*capacity);
 
-            Some((IoTypeDetails::bytes(recommended_capacity), metadata))
-        }
-        IoTypeMetadataKind::FixedCapacityBytes16b | IoTypeMetadataKind::FixedCapacityString16b => {
-            if metadata.is_empty() {
-                return None;
-            }
-
-            let mut num_bytes = [0; const { size_of::<u16>() }];
-            (metadata, _) = copy_n_bytes(metadata, &mut num_bytes, size_of::<u16>())?;
-            let num_bytes = u32::from(u16::from_le_bytes(num_bytes));
-            // Length is stored in `u16`
-            let recommended_capacity = num_bytes.checked_add(size_of::<u16>() as u32)?;
+            let type_details;
+            (type_details, metadata) = decode_type_details(metadata)?;
+            // The length is stored as `u32`, extended to the alignment of elements if it is larger,
+            // such that elements are aligned
+            let element_alignment = u32::from(type_details.alignment.get());
+            let len_size = if element_alignment > u32::SIZE {
+                element_alignment
+            } else {
+                u32::SIZE
+            };
+            let recommended_capacity = type_details
+                .recommended_capacity
+                .checked_mul(capacity)?
+                .checked_add(len_size)?;
 
             Some((
                 IoTypeDetails {
                     recommended_capacity,
-                    alignment: NonZeroU8::new(2).expect("Not zero; qed"),
+                    alignment: type_details.alignment,
                 },
                 metadata,
             ))
+        }
+        IoTypeMetadataKind::FixedCapacityString => {
+            let capacity;
+            (capacity, metadata) = metadata.split_first_chunk()?;
+            // The length is stored as `u32`
+            let recommended_capacity = u32::from_le_bytes(*capacity).checked_add(u32::SIZE)?;
+
+            Some((IoTypeDetails::bytes(recommended_capacity), metadata))
         }
         IoTypeMetadataKind::Unaligned => {
             if metadata.is_empty() {
@@ -232,19 +243,4 @@ const fn enum_capacity(mut input: &[u8], has_fields: bool) -> Option<(IoTypeDeta
         },
         input,
     ))
-}
-
-/// Copies `n` bytes from input to output and returns both input and output after `n` bytes offset
-#[inline(always)]
-const fn copy_n_bytes<'i, 'o>(
-    input: &'i [u8],
-    output: &'o mut [u8],
-    n: usize,
-) -> Option<(&'i [u8], &'o mut [u8])> {
-    let (source, input) = input.split_at_checked(n)?;
-    let (target, output) = output.split_at_mut_checked(n)?;
-
-    target.copy_from_slice(source);
-
-    Some((input, output))
 }

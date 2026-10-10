@@ -15,8 +15,6 @@ Breaking changes:
 * `IoTypeOptional` is now an `unsafe` trait, previously it could be implemented for a type without a valid empty state,
   like any `TrivialType`, which gave `#[contract]` methods access to uninitialized memory of empty `#[slot]` and
   `#[tmp]` storage
-* `FixedCapacityBytesU8::copy_from()` and `FixedCapacityBytesU16::copy_from()` no longer have an unused type parameter,
-  previously they couldn't be called without specifying it
 * `IoTypeMetadataKind` no longer has kinds for specific values and widths of numbers, and decoders reject enums without
   fields encoded as `Enum` instead of `EnumNoFields`, so each type has exactly one encoding now and the same type always
   has the same compact metadata, previously decoders accepted several encodings of the same type, like `Array16b` with 5
@@ -24,11 +22,10 @@ Breaking changes:
   `EnumNoFields1`..`EnumNoFields10`, `ArrayU8x8`..`ArrayU8x4096` and `VariableElements0` are removed, structs and enums
   always encode the number of fields and variants. `Array8b`..`Array32b` and `VariableElements8b`..`VariableElements32b`
   are replaced with `Array` and `VariableElements`, which encode the number of elements or recommended allocation in 4
-  bytes. Remaining kinds are renumbered, so `METADATA` of structs, enums, arrays, `VariableElements`, fixed capacity
-  bytes and strings and `Unaligned` changes, and so do fingerprints of methods that use them.
-  `IoTypeMetadataKind::compact()` turns all structs into tuple structs, previously structs with more than 10 named
-  fields kept the `Struct` kind with field names removed, which is not valid metadata and differs from compact metadata
-  of a tuple struct with the same fields
+  bytes. Remaining kinds are renumbered, so `METADATA` of structs, enums, arrays, `VariableElements` and `Unaligned`
+  changes, and so do fingerprints of methods that use them. `IoTypeMetadataKind::compact()` turns all structs into
+  tuple structs, previously structs with more than 10 named fields kept the `Struct` kind with field names removed,
+  which is not valid metadata and differs from compact metadata of a tuple struct with the same fields
 * `IoTypeMetadataKind::type_name()` returns `None` for metadata that `IoTypeMetadataKind::type_details()` rejects,
   previously it returned a name without decoding the rest of the metadata
 * `VariableBytes` is now an alias of `VariableElements<u8>` instead of a separate type with the same API. Its `METADATA`
@@ -36,6 +33,22 @@ Breaking changes:
   metadata kinds are removed), so fingerprints of methods that use it change. `copy_from()` only copies from an instance
   of the same type, previously it accepted any `IoType`. `Debug` output and compiler diagnostics show
   `VariableElements<u8>`, and implementations of a trait for both `VariableBytes` and `VariableElements` now conflict
+* `FixedCapacityBytesU8`, `FixedCapacityBytesU16`, `FixedCapacityStringU8` and `FixedCapacityStringU16` are replaced
+  with `FixedCapacityElements<Element, CAPACITY>` for any `TrivialType` elements, `FixedCapacityBytes<CAPACITY>` (an
+  alias of `FixedCapacityElements<u8, CAPACITY>`) and `FixedCapacityString<CAPACITY>`. The length is stored as
+  little-endian `u32` in 4 bytes, followed by zero bytes up to the alignment of elements if it is larger, so there is no
+  padding for any capacity and elements. A capacity above `u32::MAX` or a size of 4 GiB or more doesn't compile,
+  previously capacities that didn't fit into the `u8` or `u16` length could compile and the length silently wrapped,
+  and `TrivialType` exposed the padding byte of `u16` versions with an odd capacity. The `FixedCapacityBytes8b`,
+  `FixedCapacityBytes16b`, `FixedCapacityString8b` and `FixedCapacityString16b` metadata kinds are replaced with
+  `FixedCapacityElements` (capacity in 4 bytes followed by metadata of elements) and `FixedCapacityString` (capacity in
+  4 bytes), so fingerprints of methods that use these types change. `try_from_bytes()` is renamed to
+  `try_from_slice()`, `get_bytes()` and `get_bytes_mut()` are renamed to `get_elements()` and `get_elements_mut()`,
+  `len()` returns `u32` and `truncate()` takes `u32`. `get_elements()` and `get_elements_mut()` return no elements if
+  the length exceeds the capacity, which is only possible for an instance created from invalid bytes, previously
+  `get_bytes()` and `get_bytes_mut()` panicked. `append()` appends after existing contents, previously it overwrote
+  the beginning of contents without changing the length. `copy_from()` no longer has an unused type parameter,
+  previously it couldn't be called without specifying it. `Debug` output only shows the length and stored elements
 * Derived `TrivialType` of structs with braces and no fields (`struct S {}`) uses the `Struct` metadata kind, previously
   it used `TupleStruct`, because named fields were detected by the first field. Compact metadata is the same either
   way, since structs turn into tuple structs in it
@@ -48,15 +61,10 @@ Breaking changes:
 
 Fixes:
 
-* `FixedCapacityBytesU8`/`FixedCapacityStringU8` with capacity above `u8::MAX` and
-  `FixedCapacityBytesU16`/`FixedCapacityStringU16` with capacity above `u16::MAX` or odd capacity no longer compile,
-  previously the length silently wrapped or `TrivialType` exposed the padding byte
 * `MaybeData` and `VariableElements` with zero-sized types no longer compile, previously `MaybeData` couldn't represent
   absence of data and `VariableElements` panicked
 * Arrays of 4 GiB or larger or with `2^32` or more elements can no longer be used as `TrivialType`, previously their
   size and length were truncated
-* `FixedCapacityBytesU8::append()` and `FixedCapacityBytesU16::append()` now append bytes after existing contents,
-  previously they overwrote the beginning of contents without changing the length
 * `VariableElements::copy_from()` no longer reads and writes out of bounds, previously it used the size in bytes as the
   number of elements to copy
 * `VariableElements::count()` now returns the number of elements, previously it returned the size in bytes
