@@ -339,7 +339,7 @@ pub enum IoTypeMetadataKind {
     /// Variable elements with up to 2^8 elements recommended allocation.
     ///
     /// Encoded as follows:
-    /// * 1 byte recommended allocation in bytes
+    /// * 1 byte recommended allocation in elements
     /// * Recursive metadata of a contained type
     VariableElements8b,
     /// Variable elements with up to 2^16 elements recommended allocation.
@@ -354,7 +354,7 @@ pub enum IoTypeMetadataKind {
     /// * 4 bytes recommended allocation in elements (little-endian)
     /// * Recursive metadata of a contained type
     VariableElements32b,
-    /// Compact alias [`VariableElements<0, T>`](crate::variable_elements::VariableElements)
+    /// Compact alias [`VariableElements<T, 0>`](crate::variable_elements::VariableElements)
     ///
     /// Encoded as follows:
     /// * Recursive metadata of a contained type
