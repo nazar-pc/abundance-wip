@@ -171,7 +171,7 @@ where
     /// Returns `false` if capacity is not enough to copy contents of `src`
     #[inline(always)]
     #[must_use = "Operation may fail"]
-    pub fn copy_from<T>(&mut self, src: &[u8]) -> bool {
+    pub fn copy_from(&mut self, src: &[u8]) -> bool {
         if src.len() > CAPACITY {
             return false;
         }
@@ -325,7 +325,7 @@ where
     /// Returns `false` if capacity is not enough to copy contents of `src`
     #[inline(always)]
     #[must_use = "Operation may fail"]
-    pub fn copy_from<T>(&mut self, src: &[u8]) -> bool {
+    pub fn copy_from(&mut self, src: &[u8]) -> bool {
         if src.len() > CAPACITY {
             return false;
         }

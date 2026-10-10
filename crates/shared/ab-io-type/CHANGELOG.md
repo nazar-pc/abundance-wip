@@ -15,6 +15,8 @@ Breaking changes:
 * `IoTypeOptional` is now an `unsafe` trait, previously it could be implemented for a type without a valid empty state,
   like any `TrivialType`, which gave `#[contract]` methods access to uninitialized memory of empty `#[slot]` and
   `#[tmp]` storage
+* `FixedCapacityBytesU8::copy_from()` and `FixedCapacityBytesU16::copy_from()` no longer have an unused type parameter,
+  previously they couldn't be called without specifying it
 
 Fixes:
 
