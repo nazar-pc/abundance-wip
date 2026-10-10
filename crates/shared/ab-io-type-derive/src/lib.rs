@@ -91,12 +91,14 @@ pub fn trivial_type_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
                         "Type size must be smaller than 2^32"
                     );
 
-                    // Ensure capacity and alignment are correctly decoded from metadata
-                    let (type_details, _metadata) =
+                    // Ensure metadata decodes completely, and capacity and alignment are correctly
+                    // decoded from it
+                    let (type_details, remaining_metadata) =
                         ::ab_io_type::metadata::IoTypeMetadataKind::type_details(
                             <#type_name as ::ab_io_type::trivial_type::TrivialType>::METADATA,
                         )
                             .expect("Statically correct metadata; qed");
+                    assert!(remaining_metadata.is_empty());
                     assert!(size_of::<#type_name>() == type_details.recommended_capacity as ::core::primitive::usize);
                     assert!(align_of::<#type_name>() == type_details.alignment.get() as ::core::primitive::usize);
                 };
@@ -165,12 +167,14 @@ pub fn trivial_type_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
                         "Type size must be smaller than 2^32"
                     );
 
-                    // Ensure capacity and alignment are correctly decoded from metadata
-                    let (type_details, _metadata) =
+                    // Ensure metadata decodes completely, and capacity and alignment are correctly
+                    // decoded from it
+                    let (type_details, remaining_metadata) =
                         ::ab_io_type::metadata::IoTypeMetadataKind::type_details(
                             <#type_name as ::ab_io_type::trivial_type::TrivialType>::METADATA,
                         )
                             .expect("Statically correct metadata; qed");
+                    assert!(remaining_metadata.is_empty());
                     assert!(size_of::<#type_name>() == type_details.recommended_capacity as ::core::primitive::usize);
                     assert!(align_of::<#type_name>() == type_details.alignment.get() as ::core::primitive::usize);
 
@@ -341,16 +345,12 @@ fn generate_enum_metadata(ident: &Ident, data_enum: &DataEnum) -> Result<TokenSt
             format!("Enum must not have more than {} variants", u8::MAX),
         )
     })?;
-    let variant_has_fields = data_enum
+    // Variants without fields in an enum with fields are encoded as variants with zero fields
+    let with_fields = data_enum
         .variants
         .iter()
-        .next()
-        .is_some_and(|variant| !variant.fields.is_empty());
-    let enum_type = if variant_has_fields {
-        "Enum"
-    } else {
-        "EnumNoFields"
-    };
+        .any(|variant| !variant.fields.is_empty());
+    let enum_type = if with_fields { "Enum" } else { "EnumNoFields" };
     let (io_type_metadata, with_num_variants) = match num_variants {
         1..=10 => (format_ident!("{enum_type}{num_variants}"), false),
         _ => (format_ident!("{enum_type}"), true),
@@ -401,7 +401,7 @@ fn generate_enum_metadata(ident: &Ident, data_enum: &DataEnum) -> Result<TokenSt
                 .chain(generate_inner_struct_metadata(
                     &variant.ident,
                     &variant.fields,
-                    variant_has_fields,
+                    with_fields,
                 ))
         })
         .collect::<Result<Vec<TokenStream>, Error>>()?;

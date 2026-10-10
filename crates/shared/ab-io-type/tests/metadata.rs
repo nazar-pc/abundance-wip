@@ -775,6 +775,15 @@ fn enums_with_different_variants() {
         Empty,
     }
 
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(u8)]
+    enum MixedFieldlessFirst {
+        Empty,
+        Full { value: () },
+        AlsoEmpty,
+        AlsoFull { first: [u8; 0], second: () },
+    }
+
     let (point, point_compact) = point();
     let expected = Expected::new(Kind::Enum3)
         .name("Shape")
@@ -826,6 +835,41 @@ fn enums_with_different_variants() {
         .name("")
         .byte(0);
     check_trivial_type::<MixedDataFirst>("MixedDataFirst", &expected, &expected_compact);
+
+    let expected = Expected::new(Kind::Enum4)
+        .name("MixedFieldlessFirst")
+        .name("Empty")
+        .byte(0)
+        .name("Full")
+        .byte(1)
+        .name("value")
+        .kind(Kind::Unit)
+        .name("AlsoEmpty")
+        .byte(0)
+        .name("AlsoFull")
+        .byte(2)
+        .name("first")
+        .kind(Kind::Array8b)
+        .byte(0)
+        .kind(Kind::U8)
+        .name("second")
+        .kind(Kind::Unit);
+    let expected_compact = Expected::new(Kind::Enum4)
+        .name("")
+        .name("")
+        .byte(0)
+        .name("")
+        .byte(1)
+        .kind(Kind::Unit)
+        .name("")
+        .byte(0)
+        .name("")
+        .byte(2)
+        .kind(Kind::Array8b)
+        .byte(0)
+        .kind(Kind::U8)
+        .kind(Kind::Unit);
+    check_trivial_type::<MixedFieldlessFirst>("MixedFieldlessFirst", &expected, &expected_compact);
 }
 
 #[test]

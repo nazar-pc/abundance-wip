@@ -40,6 +40,9 @@ Fixes:
   data, previously uninitialized memory was then exposed as initialized
 * Enums with 11 to 16 variants can now derive `TrivialType`, previously the derive used metadata kinds that don't
   exist for them and didn't compile
+* Derived `TrivialType` of enums that have both variants with and without fields (possible with zero-sized fields) now
+  has well-formed metadata with the number of fields of every variant, previously the metadata was malformed when the
+  first variant had no fields
 
 # 0.2.0
 
