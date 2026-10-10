@@ -874,6 +874,66 @@ fn enums_with_different_variants() {
 }
 
 #[test]
+fn enums_with_explicit_discriminants() {
+    const ONE: u8 = 1;
+
+    // Explicit discriminants equal to variant indices don't change metadata, so it is the same as
+    // for implicit discriminants in other tests
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(u8)]
+    enum NoFields3 {
+        A = 0,
+        B = 1,
+        C = 2,
+    }
+
+    // Implicit discriminants continue from explicit ones
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(u8)]
+    enum NoFields12 {
+        A,
+        B = 1,
+        C,
+        D,
+        E,
+        F,
+        G,
+        H,
+        I,
+        J,
+        K = 10,
+        L,
+    }
+
+    // Discriminants are constant expressions, which can refer to `Self` and local items
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(u8)]
+    enum NoFields4 {
+        A = Self::FIRST,
+        B = ONE,
+        C = ONE + 1,
+        // The type is inferred from the enum's representation
+        D = 3u16 as _,
+    }
+
+    impl NoFields4 {
+        const FIRST: u8 = 0;
+    }
+
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(u8)]
+    enum Data2 {
+        A { value: u8 } = 0,
+        B { value: u8 } = 1,
+    }
+
+    check_fieldless_enum::<NoFields3>("NoFields3", 3, Kind::EnumNoFields3);
+    check_fieldless_enum::<NoFields12>("NoFields12", 12, Kind::EnumNoFields);
+    check_fieldless_enum::<NoFields4>("NoFields4", 4, Kind::EnumNoFields4);
+    check_data_enum::<Data2>("Data2", 2, Kind::Enum2);
+}
+
+#[test]
 fn nested_types() {
     fieldless_enum!(Direction, [A, B]);
     data_enum!(Value, [A, B]);

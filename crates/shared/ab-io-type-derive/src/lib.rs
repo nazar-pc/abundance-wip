@@ -1,5 +1,5 @@
-use proc_macro2::{Ident, Literal, TokenStream};
-use quote::{format_ident, quote};
+use proc_macro2::{Group, Ident, Literal, Span, TokenStream, TokenTree};
+use quote::{ToTokens, format_ident, quote, quote_spanned};
 use std::iter;
 use syn::spanned::Spanned;
 use syn::token::Paren;
@@ -124,6 +124,37 @@ pub fn trivial_type_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
                 .into();
             }
 
+            // Metadata identifies variants by their index and doesn't record discriminants, so
+            // explicit discriminants must be equal to the index. An implicit discriminant is zero
+            // for the first variant and one more than the previous discriminant otherwise, so it is
+            // equal to the index too when all explicit discriminants are. `#[repr(u8)]` doesn't
+            // allow more than 256 variants, so each variant gets an index.
+            let discriminant_assertions = data_enum
+                .variants
+                .iter()
+                .zip(0..=u8::MAX)
+                .filter_map(|(variant, index)| {
+                    let (_eq_token, discriminant) = variant.discriminant.as_ref()?;
+                    // Errors point at the discriminant
+                    let span = Span::call_site().located_at(discriminant.span());
+                    // Discriminants are constant expressions that can refer to `Self`, which
+                    // doesn't exist outside the enum. Only `Self` written in the discriminant is
+                    // replaced, `Self` produced by macros or used in nested impls is not supported.
+                    let discriminant = replace_self(discriminant.to_token_stream(), type_name);
+                    let message = format!(
+                        "Discriminant of `{}` must be equal to its index {index}, variants are \
+                        identified by their index in `TrivialType` metadata",
+                        variant.ident
+                    );
+
+                    Some(quote_spanned! {span=>
+                        // The index goes first, so the discriminant is inferred as `u8` like in
+                        // the enum definition
+                        const _: () = assert!(#index == (#discriminant), #message);
+                    })
+                })
+                .collect::<Vec<_>>();
+
             let repr_numeric = format_ident!("u8");
 
             let field_types = data_enum
@@ -160,6 +191,8 @@ pub fn trivial_type_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
             };
 
             quote! {
+                #( #discriminant_assertions )*
+
                 const _: () = {
                     #( #padding_assertions )*
 
@@ -278,6 +311,28 @@ fn parse_repr(
         repr_align,
         repr_packed,
     ))
+}
+
+/// Replace `Self` in `tokens` with `type_name`, so that an expression from the definition of the
+/// type can be used outside of it
+fn replace_self(tokens: TokenStream, type_name: &Ident) -> TokenStream {
+    tokens
+        .into_iter()
+        .map(|token| match token {
+            TokenTree::Ident(ident) if ident == "Self" => {
+                let mut type_name = type_name.clone();
+                type_name.set_span(ident.span());
+                TokenTree::Ident(type_name)
+            }
+            TokenTree::Group(group) => {
+                let mut new_group =
+                    Group::new(group.delimiter(), replace_self(group.stream(), type_name));
+                new_group.set_span(group.span());
+                TokenTree::Group(new_group)
+            }
+            token => token,
+        })
+        .collect()
 }
 
 fn generate_struct_metadata(ident: &Ident, data_struct: &DataStruct) -> Result<TokenStream, Error> {

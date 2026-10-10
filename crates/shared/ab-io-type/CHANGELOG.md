@@ -23,6 +23,9 @@ Breaking changes:
   structs, so compact metadata of such structs and fingerprints of methods that use them don't change
 * `ArrayU8x2028` and `VariableBytes2028` metadata kinds are renamed to `ArrayU8x2048` and `VariableBytes2048` and are
   used for `[u8; 2048]` and `VariableBytes<2048>`, previously 2028 was a typo and these types used generic kinds
+* `TrivialType` can no longer be derived for enums with explicit discriminants that are not equal to variant indices,
+  metadata identifies variants by their index and doesn't record discriminants, so previously it didn't match values
+  of such enums
 
 Fixes:
 

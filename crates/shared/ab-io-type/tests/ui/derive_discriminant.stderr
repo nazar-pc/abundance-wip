@@ -1,0 +1,54 @@
+error[E0080]: evaluation panicked: Discriminant of `B` must be equal to its index 1, variants are identified by their index in `TrivialType` metadata
+  --> tests/ui/derive_discriminant.rs:11:9
+   |
+ 7 | #[derive(Copy, Clone, TrivialType)]
+   |                       ----------- in this derive macro expansion
+...
+11 |     B = 5,
+   |         ^ evaluation of `_` failed here
+   |
+   = note: this error originates in the macro `$crate::panic::panic_2021` which comes from the expansion of the derive macro `TrivialType` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0080]: evaluation panicked: Discriminant of `A` must be equal to its index 0, variants are identified by their index in `TrivialType` metadata
+  --> tests/ui/derive_discriminant.rs:18:9
+   |
+15 | #[derive(Copy, Clone, TrivialType)]
+   |                       ----------- in this derive macro expansion
+...
+18 |     A = 1,
+   |         ^ evaluation of `_` failed here
+   |
+   = note: this error originates in the macro `$crate::panic::panic_2021` which comes from the expansion of the derive macro `TrivialType` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0080]: evaluation panicked: Discriminant of `B` must be equal to its index 1, variants are identified by their index in `TrivialType` metadata
+  --> tests/ui/derive_discriminant.rs:26:9
+   |
+22 | #[derive(Copy, Clone, TrivialType)]
+   |                       ----------- in this derive macro expansion
+...
+26 |     B = Self::FIRST + 2,
+   |         ^^^^^^^^^^^^^^^ evaluation of `_` failed here
+   |
+   = note: this error originates in the macro `$crate::panic::panic_2021` which comes from the expansion of the derive macro `TrivialType` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0080]: evaluation panicked: Discriminant of `A` must be equal to its index 0, variants are identified by their index in `TrivialType` metadata
+  --> tests/ui/derive_discriminant.rs:36:23
+   |
+33 | #[derive(Copy, Clone, TrivialType)]
+   |                       ----------- in this derive macro expansion
+...
+36 |     A { value: u8 } = 1,
+   |                       ^ evaluation of `_` failed here
+   |
+   = note: this error originates in the macro `$crate::panic::panic_2021` which comes from the expansion of the derive macro `TrivialType` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0080]: evaluation panicked: Discriminant of `B` must be equal to its index 1, variants are identified by their index in `TrivialType` metadata
+  --> tests/ui/derive_discriminant.rs:37:23
+   |
+33 | #[derive(Copy, Clone, TrivialType)]
+   |                       ----------- in this derive macro expansion
+...
+37 |     B { value: u8 } = 0,
+   |                       ^ evaluation of `_` failed here
+   |
+   = note: this error originates in the macro `$crate::panic::panic_2021` which comes from the expansion of the derive macro `TrivialType` (in Nightly builds, run with -Z macro-backtrace for more info)
