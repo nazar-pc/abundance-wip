@@ -29,6 +29,9 @@ Breaking changes:
 * `TrivialType` derive checks all `#[repr(..)]` attributes instead of only the first one and requires exactly
   `#[repr(u8)]` for enums, previously `#[repr(C, u8)]` (which has different offsets of fields) was accepted and options
   in other attributes were only rejected by assertions about metadata, if at all
+* `IoTypeMetadataKind::compact()` turns structs with more than 10 named fields into tuple structs like other structs,
+  previously it kept the `Struct` kind with field names removed, which is not valid metadata and differs from compact
+  metadata of a tuple struct with the same fields, so fingerprints of methods that use such structs change
 
 Fixes:
 

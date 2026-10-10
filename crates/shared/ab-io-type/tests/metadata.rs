@@ -117,6 +117,16 @@ impl Expected {
     }
 }
 
+/// Compact metadata of a single type
+fn compact(metadata: &[u8]) -> Vec<u8> {
+    let mut compact = [0; MAX_METADATA_CAPACITY];
+    let (remainder, compact_remainder) = Kind::compact(metadata, &mut compact).unwrap();
+    assert!(remainder.is_empty());
+    let compact_length = MAX_METADATA_CAPACITY - compact_remainder.len();
+
+    compact[..compact_length].to_vec()
+}
+
 /// Check that metadata decodes into the expected name, capacity and alignment, compacts into the
 /// expected bytes, and that no truncated metadata decodes
 #[track_caller]
@@ -137,17 +147,14 @@ fn check_decoding(
     );
     assert_eq!(usize::from(type_details.alignment.get()), alignment);
 
-    let mut compact = [0; MAX_METADATA_CAPACITY];
-    let (remainder, compact_remainder) = Kind::compact(metadata, &mut compact).unwrap();
-    assert!(remainder.is_empty());
-    let compact_length = MAX_METADATA_CAPACITY - compact_remainder.len();
-    assert_eq!(&compact[..compact_length], expected_compact.0.as_slice());
+    assert_eq!(compact(metadata), expected_compact.0);
 
+    let mut compact_buffer = [0; MAX_METADATA_CAPACITY];
     for length in 0..metadata.len() {
         let truncated = &metadata[..length];
 
         assert!(Kind::type_details(truncated).is_none());
-        assert!(Kind::compact(truncated, &mut compact).is_none());
+        assert!(Kind::compact(truncated, &mut compact_buffer).is_none());
     }
 }
 
@@ -546,10 +553,8 @@ fn structs_with_named_fields() {
     check_named_struct::<Named9>("Named9", 9, Kind::Struct9, Kind::TupleStruct9);
     check_named_struct::<Named10>("Named10", 10, Kind::Struct10, Kind::TupleStruct10);
     // More than 10 fields need an explicit number of fields
-    // TODO: Unlike `Struct1`..`Struct10`, `Struct` is not turned into a tuple struct by compacting,
-    //  even though field names are removed and `IoTypeMetadataKind::compact()` says it should be
-    check_named_struct::<Named11>("Named11", 11, Kind::Struct, Kind::Struct);
-    check_named_struct::<Named12>("Named12", 12, Kind::Struct, Kind::Struct);
+    check_named_struct::<Named11>("Named11", 11, Kind::Struct, Kind::TupleStruct);
+    check_named_struct::<Named12>("Named12", 12, Kind::Struct, Kind::TupleStruct);
 }
 
 #[test]
@@ -580,6 +585,18 @@ fn tuple_structs() {
     // More than 10 fields need an explicit number of fields
     check_tuple_struct::<Tuple11>("Tuple11", 11, Kind::TupleStruct);
     check_tuple_struct::<Tuple12>("Tuple12", 12, Kind::TupleStruct);
+}
+
+#[test]
+fn named_and_tuple_structs_compact_equally() {
+    named_struct!(Named10, [a, b, c, d, e, f, g, h, i, j]);
+    named_struct!(Named11, [a, b, c, d, e, f, g, h, i, j, k]);
+    tuple_struct!(Tuple10, [a, b, c, d, e, f, g, h, i, j]);
+    tuple_struct!(Tuple11, [a, b, c, d, e, f, g, h, i, j, k]);
+
+    // Names are removed, so only the types of fields remain, regardless of their number
+    assert_eq!(compact(Named10::METADATA), compact(Tuple10::METADATA));
+    assert_eq!(compact(Named11::METADATA), compact(Tuple11::METADATA));
 }
 
 #[test]
@@ -641,7 +658,7 @@ fn structs_with_different_field_types() {
         .kind(Kind::Array8b)
         .byte(1)
         .kind(Kind::U8);
-    let expected_compact = Expected::new(Kind::Struct)
+    let expected_compact = Expected::new(Kind::TupleStruct)
         .name("")
         .byte(13)
         .kind(Kind::U128)

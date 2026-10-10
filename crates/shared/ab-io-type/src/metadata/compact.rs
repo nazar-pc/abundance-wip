@@ -24,7 +24,8 @@ pub(super) const fn compact_metadata<'i, 'o>(
             *io_type_metadata_kind_output = io_type_metadata_kind_input;
         }
         IoTypeMetadataKind::Struct => {
-            *io_type_metadata_kind_output = io_type_metadata_kind_input;
+            // Convert struct with field names to tuple struct
+            *io_type_metadata_kind_output = IoTypeMetadataKind::TupleStruct as u8;
             (input, output) = compact_struct(input, output, None, false)?;
         }
         IoTypeMetadataKind::Struct0 => {
