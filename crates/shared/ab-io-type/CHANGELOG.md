@@ -38,6 +38,8 @@ Fixes:
   ignored and were written through a reference to a single byte or element, which is undefined behavior
 * `MaybeData::get_mut_or_init_with()` now copies the value if the initialization function returns a reference to other
   data, previously uninitialized memory was then exposed as initialized
+* Enums with 11 to 16 variants can now derive `TrivialType`, previously the derive used metadata kinds that don't
+  exist for them and didn't compile
 
 # 0.2.0
 

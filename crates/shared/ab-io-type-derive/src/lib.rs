@@ -352,7 +352,7 @@ fn generate_enum_metadata(ident: &Ident, data_enum: &DataEnum) -> Result<TokenSt
         "EnumNoFields"
     };
     let (io_type_metadata, with_num_variants) = match num_variants {
-        1..=16 => (format_ident!("{enum_type}{num_variants}"), false),
+        1..=10 => (format_ident!("{enum_type}{num_variants}"), false),
         _ => (format_ident!("{enum_type}"), true),
     };
 

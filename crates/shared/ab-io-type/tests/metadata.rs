@@ -697,6 +697,9 @@ fn fieldless_enums() {
     fieldless_enum!(NoFields8, [A, B, C, D, E, F, G, H]);
     fieldless_enum!(NoFields9, [A, B, C, D, E, F, G, H, I]);
     fieldless_enum!(NoFields10, [A, B, C, D, E, F, G, H, I, J]);
+    fieldless_enum!(NoFields11, [A, B, C, D, E, F, G, H, I, J, K]);
+    fieldless_enum!(NoFields12, [A, B, C, D, E, F, G, H, I, J, K, L]);
+    fieldless_enum!(NoFields16, [A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P]);
     fieldless_enum!(
         NoFields17,
         [A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q]
@@ -713,6 +716,9 @@ fn fieldless_enums() {
     check_fieldless_enum::<NoFields9>("NoFields9", 9, Kind::EnumNoFields9);
     check_fieldless_enum::<NoFields10>("NoFields10", 10, Kind::EnumNoFields10);
     // More than 10 variants need an explicit number of variants
+    check_fieldless_enum::<NoFields11>("NoFields11", 11, Kind::EnumNoFields);
+    check_fieldless_enum::<NoFields12>("NoFields12", 12, Kind::EnumNoFields);
+    check_fieldless_enum::<NoFields16>("NoFields16", 16, Kind::EnumNoFields);
     check_fieldless_enum::<NoFields17>("NoFields17", 17, Kind::EnumNoFields);
 }
 
@@ -728,6 +734,9 @@ fn enums_with_fields() {
     data_enum!(Data8, [A, B, C, D, E, F, G, H]);
     data_enum!(Data9, [A, B, C, D, E, F, G, H, I]);
     data_enum!(Data10, [A, B, C, D, E, F, G, H, I, J]);
+    data_enum!(Data11, [A, B, C, D, E, F, G, H, I, J, K]);
+    data_enum!(Data12, [A, B, C, D, E, F, G, H, I, J, K, L]);
+    data_enum!(Data16, [A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P]);
     data_enum!(Data17, [A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q]);
 
     check_data_enum::<Data1>("Data1", 1, Kind::Enum1);
@@ -741,6 +750,9 @@ fn enums_with_fields() {
     check_data_enum::<Data9>("Data9", 9, Kind::Enum9);
     check_data_enum::<Data10>("Data10", 10, Kind::Enum10);
     // More than 10 variants need an explicit number of variants
+    check_data_enum::<Data11>("Data11", 11, Kind::Enum);
+    check_data_enum::<Data12>("Data12", 12, Kind::Enum);
+    check_data_enum::<Data16>("Data16", 16, Kind::Enum);
     check_data_enum::<Data17>("Data17", 17, Kind::Enum);
 }
 
