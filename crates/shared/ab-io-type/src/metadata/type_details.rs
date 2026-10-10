@@ -72,11 +72,10 @@ pub(super) const fn decode_type_details(mut metadata: &[u8]) -> Option<(IoTypeDe
         }
         IoTypeMetadataKind::FixedCapacityBytes8b | IoTypeMetadataKind::FixedCapacityString8b => {
             let num_bytes = *metadata.split_off_first()?;
+            // Length is stored in `u8`
+            let recommended_capacity = u32::from(num_bytes).checked_add(size_of::<u8>() as u32)?;
 
-            Some((
-                IoTypeDetails::bytes(u32::from(num_bytes) + size_of::<u8>() as u32),
-                metadata,
-            ))
+            Some((IoTypeDetails::bytes(recommended_capacity), metadata))
         }
         IoTypeMetadataKind::FixedCapacityBytes16b | IoTypeMetadataKind::FixedCapacityString16b => {
             if metadata.is_empty() {
@@ -85,11 +84,13 @@ pub(super) const fn decode_type_details(mut metadata: &[u8]) -> Option<(IoTypeDe
 
             let mut num_bytes = [0; const { size_of::<u16>() }];
             (metadata, _) = copy_n_bytes(metadata, &mut num_bytes, size_of::<u16>())?;
-            let num_bytes = u16::from_le_bytes(num_bytes) as u32;
+            let num_bytes = u32::from(u16::from_le_bytes(num_bytes));
+            // Length is stored in `u16`
+            let recommended_capacity = num_bytes.checked_add(size_of::<u16>() as u32)?;
 
             Some((
                 IoTypeDetails {
-                    recommended_capacity: num_bytes + size_of::<u16>() as u32,
+                    recommended_capacity,
                     alignment: NonZeroU8::new(2).expect("Not zero; qed"),
                 },
                 metadata,
@@ -195,7 +196,7 @@ const fn enum_capacity(mut input: &[u8], has_fields: bool) -> Option<(IoTypeDeta
         // Variant capacity as if it was a struct
         (variant_type_details, input) = fields_type_details(input, field_count, false)?;
         // `+ 1` is for the discriminant
-        let variant_capacity = variant_type_details.recommended_capacity + 1;
+        let variant_capacity = variant_type_details.recommended_capacity.checked_add(1)?;
         // TODO: `core::cmp::max()` isn't const yet due to trait bounds
         alignment = if variant_type_details.alignment.get() > alignment {
             variant_type_details.alignment.get()

@@ -168,6 +168,21 @@ fn check_rejected(metadata: &[u8]) {
     assert!(Kind::compact(metadata, &mut compact_buffer).is_none());
 }
 
+/// Check that metadata decodes into the largest capacity that fits into `u32`
+#[track_caller]
+fn check_max_capacity(metadata: &Expected) {
+    let (type_details, remainder) = Kind::type_details(&metadata.0).unwrap();
+    assert!(remainder.is_empty());
+    assert_eq!(type_details.recommended_capacity, u32::MAX);
+}
+
+/// Check that metadata with a capacity that doesn't fit into `u32` doesn't decode
+#[track_caller]
+fn check_capacity_overflow(metadata: &Expected) {
+    assert!(Kind::type_name(&metadata.0).is_none());
+    assert!(Kind::type_details(&metadata.0).is_none());
+}
+
 /// Check `METADATA` of a [`TrivialType`] and its decoding, see [`check_decoding()`]
 #[track_caller]
 fn check_trivial_type<T>(name: &str, expected: &Expected, expected_compact: &Expected)
@@ -1192,4 +1207,53 @@ fn nested_types() {
         .nested(&value_compact)
         .nested(&inner_compact);
     check_trivial_type::<Outer>("Outer", &expected, &expected_compact);
+}
+
+#[test]
+fn capacity_overflow_is_rejected() {
+    // Metadata of deployed contracts is untrusted, so crafted metadata with a capacity that doesn't
+    // fit into `u32` must be rejected instead of overflowing
+    let bytes = |count| Expected::new(Kind::Array).u32(count).kind(Kind::U8);
+    let pair_with_byte = |first: &Expected| {
+        Expected::new(Kind::TupleStruct)
+            .name("Pair")
+            .byte(2)
+            .nested(first)
+            .kind(Kind::U8)
+    };
+    let enum_with = |field: &Expected| {
+        Expected::new(Kind::Enum)
+            .name("Enum")
+            .byte(1)
+            .name("A")
+            .byte(1)
+            .name("field")
+            .nested(field)
+    };
+
+    // Number of elements times capacity of an element
+    check_max_capacity(&bytes(u32::MAX));
+    check_capacity_overflow(&Expected::new(Kind::Array).u32(1 << 31).kind(Kind::U16));
+    check_max_capacity(
+        &Expected::new(Kind::VariableElements)
+            .u32(u32::MAX)
+            .kind(Kind::U8),
+    );
+    check_capacity_overflow(
+        &Expected::new(Kind::VariableElements)
+            .u32(1 << 31)
+            .kind(Kind::U16),
+    );
+
+    // Sum of capacities of fields
+    check_max_capacity(&pair_with_byte(&bytes(u32::MAX - 1)));
+    check_capacity_overflow(&pair_with_byte(&bytes(u32::MAX)));
+
+    // Capacity of a variant plus the discriminant
+    check_max_capacity(&enum_with(&bytes(u32::MAX - 1)));
+    check_capacity_overflow(&enum_with(&bytes(u32::MAX)));
+
+    // Overflow in nested types
+    check_capacity_overflow(&Expected::new(Kind::Unaligned).nested(&enum_with(&bytes(u32::MAX))));
+    check_capacity_overflow(&Expected::new(Kind::Array).u32(2).nested(&bytes(u32::MAX)));
 }

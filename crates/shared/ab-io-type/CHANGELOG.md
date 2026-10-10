@@ -74,6 +74,9 @@ Fixes:
 * `IoTypeMetadataKind::type_details()` now returns the alignment of elements for `VariableElements<T>` with the default
   recommended allocation of 0, previously it returned 1, so data placed according to metadata, like inputs in
   transaction payloads and buffers for outputs, could be misaligned
+* `IoTypeMetadataKind::type_details()` now returns `None` for metadata of an enum with a variant of `u32::MAX` bytes,
+  previously adding the discriminant to the capacity of the variant overflowed, which panicked in debug builds and
+  resulted in a capacity of zero in release builds
 
 # 0.2.0
 
