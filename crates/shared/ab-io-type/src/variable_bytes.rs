@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 use crate::metadata::{IoTypeMetadataKind, MAX_METADATA_CAPACITY, concat_metadata_sources};
 use crate::trivial_type::TrivialType;
 use crate::{DerefWrapper, IoType, IoTypeOptional};
@@ -274,7 +277,13 @@ impl<const RECOMMENDED_ALLOCATION: u32> VariableBytes<RECOMMENDED_ALLOCATION> {
     #[must_use = "Operation may fail"]
     pub fn append(&mut self, bytes: &[u8]) -> bool {
         let size = self.size();
-        if bytes.len() + size as usize > self.capacity as usize {
+        let Some(new_size) = u32::try_from(bytes.len())
+            .ok()
+            .and_then(|appended_size| size.checked_add(appended_size))
+        else {
+            return false;
+        };
+        if new_size > self.capacity {
             return false;
         }
 
@@ -285,12 +294,16 @@ impl<const RECOMMENDED_ALLOCATION: u32> VariableBytes<RECOMMENDED_ALLOCATION> {
 
         // SAFETY: allocation range and offset are checked above, the allocation itself is
         // guaranteed by constructors
-        let mut start = unsafe { self.bytes.offset(offset) };
+        let start = unsafe { self.bytes.offset(offset) };
         // SAFETY: Alignment is the same, writing happens in properly allocated memory guaranteed by
         // constructors, number of bytes is checked above, Rust ownership rules will prevent any
         // overlap here (creating reference to non-initialized part of allocation would already be
-        // undefined behavior anyway)
-        unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), start.as_mut(), bytes.len()) }
+        // undefined behavior anyway). The new size covers initialized bytes only and is checked to
+        // be within capacity above.
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), start.as_ptr(), bytes.len());
+            self.size.write(new_size);
+        }
 
         true
     }
