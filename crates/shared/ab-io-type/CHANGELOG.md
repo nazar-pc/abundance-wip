@@ -5,6 +5,13 @@ Breaking changes:
 * `IoType::as_ptr()` and `IoType::as_mut_ptr()` are now safe and return `NonNull` by value instead of a reference to
   the internal pointer, `VariableBytes::as_mut_ptr()` and `VariableElements::as_mut_ptr()` also return `NonNull` now,
   previously they returned `&mut NonNull`, which allowed safe code to point an instance to arbitrary memory
+* `from_buffer()` and `from_buffer_mut()` of `VariableBytes` and `VariableElements` now return `None` if the size
+  doesn't match the buffer, same for `MaybeData::from_mut()` with a size other than `0` or the size of data, previously
+  this was only checked in debug builds, and memory beyond the buffer was exposed otherwise
+* `from_uninit()` of `VariableBytes`, `VariableElements` and `MaybeData` now returns `None` if the size is not `0` or if
+  the buffer is larger than `u32::MAX` bytes, previously a non-zero size exposed uninitialized memory as initialized
+  (`VariableBytes` and `VariableElements` accepted it even in debug builds) and capacity of a larger buffer was
+  truncated
 
 Fixes:
 
@@ -21,7 +28,7 @@ Fixes:
   number of elements to copy
 * `VariableElements::count()` now returns the number of elements, previously it returned the size in bytes
 * `VariableElements::from_uninit()` now sets capacity in bytes, previously it used the number of elements, so only a
-  part of the buffer could be used and a size covering the whole buffer panicked in debug builds
+  part of the buffer could be used
 * `VariableBytes::append()` and `VariableElements::append()` now update the size, previously appended contents were
   ignored and were written through a reference to a single byte or element, which is undefined behavior
 * `MaybeData::get_mut_or_init_with()` now copies the value if the initialization function returns a reference to other

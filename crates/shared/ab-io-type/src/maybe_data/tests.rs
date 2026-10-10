@@ -1,13 +1,63 @@
 use crate::maybe_data::MaybeData;
 use crate::trivial_type::TrivialType;
+use crate::variable_bytes::VariableBytes;
 use core::mem::MaybeUninit;
+
+#[test]
+fn from_mut() {
+    let mut data = 1_u64;
+
+    {
+        let mut size = 0;
+        let maybe_data = MaybeData::from_mut(&mut data, &mut size).unwrap();
+        assert_eq!(maybe_data.get(), None);
+    }
+
+    {
+        let mut size = u64::SIZE;
+        let maybe_data = MaybeData::from_mut(&mut data, &mut size).unwrap();
+        assert_eq!(maybe_data.get(), Some(&1));
+    }
+
+    // Size that is neither zero nor the size of data, users of `IoType` like
+    // `VariableBytes::copy_from()` would read past `data` otherwise
+    {
+        let mut size = 2 * u64::SIZE;
+        let maybe_data = MaybeData::from_mut(&mut data, &mut size);
+        let copied = maybe_data.as_deref().map(|maybe_data| {
+            let mut buffer = [MaybeUninit::uninit(); 16];
+            let mut buffer_size = 0;
+            let mut bytes = VariableBytes::<0>::from_uninit(&mut buffer, &mut buffer_size).unwrap();
+            bytes.copy_from(maybe_data)
+        });
+        assert_eq!(copied, None);
+    }
+}
+
+#[test]
+fn from_uninit() {
+    let mut uninit = MaybeUninit::<u64>::uninit();
+
+    {
+        let mut size = 0;
+        let maybe_data = MaybeData::from_uninit(&mut uninit, &mut size).unwrap();
+        assert_eq!(maybe_data.get(), None);
+    }
+
+    // Non-zero size, uninitialized data would be exposed as initialized otherwise
+    {
+        let mut size = u64::SIZE;
+        let maybe_data = MaybeData::from_uninit(&mut uninit, &mut size);
+        assert_eq!(maybe_data.as_deref().map(MaybeData::get), None);
+    }
+}
 
 #[test]
 fn get_mut_or_init_with() {
     let mut uninit = MaybeUninit::<u64>::uninit();
     let mut size = 0;
     {
-        let mut maybe_data = MaybeData::from_uninit(&mut uninit, &mut size);
+        let mut maybe_data = MaybeData::from_uninit(&mut uninit, &mut size).unwrap();
 
         assert_eq!(*maybe_data.get_mut_or_init_with(|data| data.write(1)), 1);
         assert_eq!(maybe_data.get(), Some(&1));
@@ -28,7 +78,7 @@ fn get_mut_or_init_with_other_reference() {
     let mut uninit = MaybeUninit::<u64>::uninit();
     let mut size = 0;
     {
-        let mut maybe_data = MaybeData::from_uninit(&mut uninit, &mut size);
+        let mut maybe_data = MaybeData::from_uninit(&mut uninit, &mut size).unwrap();
 
         // Returns a reference to other data without initializing provided memory. Safe code can
         // return a leaked `Box` instead, this test uses a local variable to avoid the leak.
