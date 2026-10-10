@@ -33,8 +33,8 @@ unsafe impl<const RECOMMENDED_ALLOCATION: u32> IoType for VariableBytes<RECOMMEN
                 return concat_metadata_sources(&[&[IoTypeMetadataKind::VariableBytes512 as u8]]);
             } else if recommended_allocation == 1024 {
                 return concat_metadata_sources(&[&[IoTypeMetadataKind::VariableBytes1024 as u8]]);
-            } else if recommended_allocation == 2028 {
-                return concat_metadata_sources(&[&[IoTypeMetadataKind::VariableBytes2028 as u8]]);
+            } else if recommended_allocation == 2048 {
+                return concat_metadata_sources(&[&[IoTypeMetadataKind::VariableBytes2048 as u8]]);
             } else if recommended_allocation == 4096 {
                 return concat_metadata_sources(&[&[IoTypeMetadataKind::VariableBytes4096 as u8]]);
             } else if recommended_allocation == 8192 {

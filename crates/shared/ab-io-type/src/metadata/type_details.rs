@@ -161,7 +161,7 @@ pub(super) const fn decode_type_details(mut metadata: &[u8]) -> Option<(IoTypeDe
         IoTypeMetadataKind::ArrayU8x256 => Some((IoTypeDetails::bytes(256), metadata)),
         IoTypeMetadataKind::ArrayU8x512 => Some((IoTypeDetails::bytes(512), metadata)),
         IoTypeMetadataKind::ArrayU8x1024 => Some((IoTypeDetails::bytes(1024), metadata)),
-        IoTypeMetadataKind::ArrayU8x2028 => Some((IoTypeDetails::bytes(2028), metadata)),
+        IoTypeMetadataKind::ArrayU8x2048 => Some((IoTypeDetails::bytes(2048), metadata)),
         IoTypeMetadataKind::ArrayU8x4096 => Some((IoTypeDetails::bytes(4096), metadata)),
         IoTypeMetadataKind::VariableBytes8b => {
             let num_bytes = *metadata.split_off_first()?;
@@ -193,7 +193,7 @@ pub(super) const fn decode_type_details(mut metadata: &[u8]) -> Option<(IoTypeDe
         IoTypeMetadataKind::VariableBytes0 => Some((IoTypeDetails::bytes(0), metadata)),
         IoTypeMetadataKind::VariableBytes512 => Some((IoTypeDetails::bytes(512), metadata)),
         IoTypeMetadataKind::VariableBytes1024 => Some((IoTypeDetails::bytes(1024), metadata)),
-        IoTypeMetadataKind::VariableBytes2028 => Some((IoTypeDetails::bytes(2028), metadata)),
+        IoTypeMetadataKind::VariableBytes2048 => Some((IoTypeDetails::bytes(2048), metadata)),
         IoTypeMetadataKind::VariableBytes4096 => Some((IoTypeDetails::bytes(4096), metadata)),
         IoTypeMetadataKind::VariableBytes8192 => Some((IoTypeDetails::bytes(8192), metadata)),
         IoTypeMetadataKind::VariableBytes16384 => Some((IoTypeDetails::bytes(16384), metadata)),

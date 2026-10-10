@@ -240,7 +240,7 @@ pub(super) const fn compact_metadata<'i, 'o>(
         | IoTypeMetadataKind::ArrayU8x256
         | IoTypeMetadataKind::ArrayU8x512
         | IoTypeMetadataKind::ArrayU8x1024
-        | IoTypeMetadataKind::ArrayU8x2028
+        | IoTypeMetadataKind::ArrayU8x2048
         | IoTypeMetadataKind::ArrayU8x4096 => {
             *io_type_metadata_kind_output = io_type_metadata_kind_input;
         }
@@ -263,7 +263,7 @@ pub(super) const fn compact_metadata<'i, 'o>(
         IoTypeMetadataKind::VariableBytes0
         | IoTypeMetadataKind::VariableBytes512
         | IoTypeMetadataKind::VariableBytes1024
-        | IoTypeMetadataKind::VariableBytes2028
+        | IoTypeMetadataKind::VariableBytes2048
         | IoTypeMetadataKind::VariableBytes4096
         | IoTypeMetadataKind::VariableBytes8192
         | IoTypeMetadataKind::VariableBytes16384

@@ -216,8 +216,8 @@ const fn array_metadata(size: u32, inner_metadata: &[u8]) -> ([u8; MAX_METADATA_
             return concat_metadata_sources(&[&[IoTypeMetadataKind::ArrayU8x512 as u8]]);
         } else if size == 1024 {
             return concat_metadata_sources(&[&[IoTypeMetadataKind::ArrayU8x1024 as u8]]);
-        } else if size == 2028 {
-            return concat_metadata_sources(&[&[IoTypeMetadataKind::ArrayU8x2028 as u8]]);
+        } else if size == 2048 {
+            return concat_metadata_sources(&[&[IoTypeMetadataKind::ArrayU8x2048 as u8]]);
         } else if size == 4096 {
             return concat_metadata_sources(&[&[IoTypeMetadataKind::ArrayU8x4096 as u8]]);
         }

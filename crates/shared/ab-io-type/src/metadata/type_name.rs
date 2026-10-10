@@ -77,7 +77,7 @@ pub(super) const fn type_name(mut metadata: &[u8]) -> Option<&[u8]> {
         IoTypeMetadataKind::ArrayU8x256 => b"[u8; 256]",
         IoTypeMetadataKind::ArrayU8x512 => b"[u8; 512]",
         IoTypeMetadataKind::ArrayU8x1024 => b"[u8; 1024]",
-        IoTypeMetadataKind::ArrayU8x2028 => b"[u8; 2028]",
+        IoTypeMetadataKind::ArrayU8x2048 => b"[u8; 2048]",
         IoTypeMetadataKind::ArrayU8x4096 => b"[u8; 4096]",
         IoTypeMetadataKind::VariableBytes8b
         | IoTypeMetadataKind::VariableBytes16b
@@ -85,7 +85,7 @@ pub(super) const fn type_name(mut metadata: &[u8]) -> Option<&[u8]> {
         | IoTypeMetadataKind::VariableBytes0
         | IoTypeMetadataKind::VariableBytes512
         | IoTypeMetadataKind::VariableBytes1024
-        | IoTypeMetadataKind::VariableBytes2028
+        | IoTypeMetadataKind::VariableBytes2048
         | IoTypeMetadataKind::VariableBytes4096
         | IoTypeMetadataKind::VariableBytes8192
         | IoTypeMetadataKind::VariableBytes16384

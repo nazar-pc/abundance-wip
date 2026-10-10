@@ -21,6 +21,8 @@ Breaking changes:
   previously it used `TupleStruct` with zero fields, because named fields were detected by the first field.
   `IoTypeMetadataKind::compact()` turns `Struct0` into `TupleStruct` with zero fields, like other structs into tuple
   structs, so compact metadata of such structs and fingerprints of methods that use them don't change
+* `ArrayU8x2028` and `VariableBytes2028` metadata kinds are renamed to `ArrayU8x2048` and `VariableBytes2048` and are
+  used for `[u8; 2048]` and `VariableBytes<2048>`, previously 2028 was a typo and these types used generic kinds
 
 Fixes:
 

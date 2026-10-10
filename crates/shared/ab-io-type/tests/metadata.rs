@@ -333,8 +333,8 @@ fn arrays_of_u8() {
     check_trivial_type::<[u8; 512]>("[u8; 512]", &expected, &expected);
     let expected = Expected::new(Kind::ArrayU8x1024);
     check_trivial_type::<[u8; 1024]>("[u8; 1024]", &expected, &expected);
-    let expected = Expected::new(Kind::ArrayU8x2028);
-    check_trivial_type::<[u8; 2028]>("[u8; 2028]", &expected, &expected);
+    let expected = Expected::new(Kind::ArrayU8x2048);
+    check_trivial_type::<[u8; 2048]>("[u8; 2048]", &expected, &expected);
     let expected = Expected::new(Kind::ArrayU8x4096);
     check_trivial_type::<[u8; 4096]>("[u8; 4096]", &expected, &expected);
 
@@ -349,8 +349,8 @@ fn arrays_of_u8() {
     check_trivial_type::<[u8; 255]>("[T; N]", &expected, &expected);
     let expected = Expected::new(Kind::Array16b).u16(257).kind(Kind::U8);
     check_trivial_type::<[u8; 257]>("[T; N]", &expected, &expected);
-    let expected = Expected::new(Kind::Array16b).u16(2048).kind(Kind::U8);
-    check_trivial_type::<[u8; 2048]>("[T; N]", &expected, &expected);
+    let expected = Expected::new(Kind::Array16b).u16(2028).kind(Kind::U8);
+    check_trivial_type::<[u8; 2028]>("[T; N]", &expected, &expected);
     let expected = Expected::new(Kind::Array16b).u16(65_535).kind(Kind::U8);
     check_trivial_type::<[u8; 65_535]>("[T; N]", &expected, &expected);
     let expected = Expected::new(Kind::Array32b).u32(65_536).kind(Kind::U8);
@@ -417,8 +417,8 @@ fn variable_bytes() {
     check_io_type::<VariableBytes<512>>(name, 512, 1, &expected, &expected);
     let expected = Expected::new(Kind::VariableBytes1024);
     check_io_type::<VariableBytes<1024>>(name, 1024, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes2028);
-    check_io_type::<VariableBytes<2028>>(name, 2028, 1, &expected, &expected);
+    let expected = Expected::new(Kind::VariableBytes2048);
+    check_io_type::<VariableBytes<2048>>(name, 2048, 1, &expected, &expected);
     let expected = Expected::new(Kind::VariableBytes4096);
     check_io_type::<VariableBytes<4096>>(name, 4096, 1, &expected, &expected);
     let expected = Expected::new(Kind::VariableBytes8192);
@@ -445,8 +445,8 @@ fn variable_bytes() {
     check_io_type::<VariableBytes<255>>(name, 255, 1, &expected, &expected);
     let expected = Expected::new(Kind::VariableBytes16b).u16(256);
     check_io_type::<VariableBytes<256>>(name, 256, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes16b).u16(2048);
-    check_io_type::<VariableBytes<2048>>(name, 2048, 1, &expected, &expected);
+    let expected = Expected::new(Kind::VariableBytes16b).u16(2028);
+    check_io_type::<VariableBytes<2028>>(name, 2028, 1, &expected, &expected);
     let expected = Expected::new(Kind::VariableBytes16b).u16(65_535);
     check_io_type::<VariableBytes<65_535>>(name, 65_535, 1, &expected, &expected);
     let expected = Expected::new(Kind::VariableBytes32b).u32(65_537);

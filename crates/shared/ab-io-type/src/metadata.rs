@@ -291,8 +291,8 @@ pub enum IoTypeMetadataKind {
     ArrayU8x512,
     /// Compact alias for `[u8; 1024]`
     ArrayU8x1024,
-    /// Compact alias for `[u8; 2028]`
-    ArrayU8x2028,
+    /// Compact alias for `[u8; 2048]`
+    ArrayU8x2048,
     /// Compact alias for `[u8; 4096]`
     ArrayU8x4096,
     /// Variable bytes with up to 2^8 bytes recommended allocation.
@@ -316,8 +316,8 @@ pub enum IoTypeMetadataKind {
     VariableBytes512,
     /// Compact alias [`VariableBytes<1024>`](crate::variable_bytes::VariableBytes)
     VariableBytes1024,
-    /// Compact alias [`VariableBytes<2028>`](crate::variable_bytes::VariableBytes)
-    VariableBytes2028,
+    /// Compact alias [`VariableBytes<2048>`](crate::variable_bytes::VariableBytes)
+    VariableBytes2048,
     /// Compact alias [`VariableBytes<4096>`](crate::variable_bytes::VariableBytes)
     VariableBytes4096,
     /// Compact alias [`VariableBytes<8192>`](crate::variable_bytes::VariableBytes)
@@ -468,7 +468,7 @@ const impl TryFrom<u8> for IoTypeMetadataKind {
             65 => Self::ArrayU8x256,
             66 => Self::ArrayU8x512,
             67 => Self::ArrayU8x1024,
-            68 => Self::ArrayU8x2028,
+            68 => Self::ArrayU8x2048,
             69 => Self::ArrayU8x4096,
             70 => Self::VariableBytes8b,
             71 => Self::VariableBytes16b,
@@ -476,7 +476,7 @@ const impl TryFrom<u8> for IoTypeMetadataKind {
             73 => Self::VariableBytes0,
             74 => Self::VariableBytes512,
             75 => Self::VariableBytes1024,
-            76 => Self::VariableBytes2028,
+            76 => Self::VariableBytes2048,
             77 => Self::VariableBytes4096,
             78 => Self::VariableBytes8192,
             79 => Self::VariableBytes16384,
