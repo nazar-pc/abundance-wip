@@ -11,6 +11,8 @@ Fixes:
   size and length were truncated
 * `FixedCapacityBytesU8::append()` and `FixedCapacityBytesU16::append()` now append bytes after existing contents,
   previously they overwrote the beginning of contents without changing the length
+* `VariableElements::copy_from()` no longer reads and writes out of bounds, previously it used the size in bytes as the
+  number of elements to copy
 
 # 0.2.0
 
