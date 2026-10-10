@@ -191,6 +191,16 @@ fn check_io_type<T>(
     check_decoding(T::METADATA, name, capacity, alignment, expected_compact);
 }
 
+/// Check that compact metadata of two types is the same
+#[track_caller]
+fn check_same_compact<A, B>()
+where
+    A: ab_io_type::IoType,
+    B: ab_io_type::IoType,
+{
+    assert_eq!(compact(A::METADATA), compact(B::METADATA));
+}
+
 /// Expected metadata and compact metadata of [`Point`]
 fn point() -> (Expected, Expected) {
     let expected = Expected::new(Kind::Struct2)
@@ -596,15 +606,156 @@ fn tuple_structs() {
 }
 
 #[test]
-fn named_and_tuple_structs_compact_equally() {
+fn named_and_tuple_forms_compact_equally() {
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(C)]
+    #[expect(clippy::empty_structs_with_brackets, reason = "Tested")]
+    struct EmptyNamed {}
+
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(C)]
+    #[expect(clippy::empty_structs_with_brackets, reason = "Tested")]
+    struct EmptyTuple();
+
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(C)]
+    struct EmptyUnit;
+
+    named_struct!(Named1, [a]);
+    named_struct!(Named2, [a, b]);
+    named_struct!(Named3, [a, b, c]);
+    named_struct!(Named4, [a, b, c, d]);
+    named_struct!(Named5, [a, b, c, d, e]);
+    named_struct!(Named6, [a, b, c, d, e, f]);
+    named_struct!(Named7, [a, b, c, d, e, f, g]);
+    named_struct!(Named8, [a, b, c, d, e, f, g, h]);
+    named_struct!(Named9, [a, b, c, d, e, f, g, h, i]);
     named_struct!(Named10, [a, b, c, d, e, f, g, h, i, j]);
     named_struct!(Named11, [a, b, c, d, e, f, g, h, i, j, k]);
+    named_struct!(Named12, [a, b, c, d, e, f, g, h, i, j, k, l]);
+    tuple_struct!(Tuple1, [a]);
+    tuple_struct!(Tuple2, [a, b]);
+    tuple_struct!(Tuple3, [a, b, c]);
+    tuple_struct!(Tuple4, [a, b, c, d]);
+    tuple_struct!(Tuple5, [a, b, c, d, e]);
+    tuple_struct!(Tuple6, [a, b, c, d, e, f]);
+    tuple_struct!(Tuple7, [a, b, c, d, e, f, g]);
+    tuple_struct!(Tuple8, [a, b, c, d, e, f, g, h]);
+    tuple_struct!(Tuple9, [a, b, c, d, e, f, g, h, i]);
     tuple_struct!(Tuple10, [a, b, c, d, e, f, g, h, i, j]);
     tuple_struct!(Tuple11, [a, b, c, d, e, f, g, h, i, j, k]);
+    tuple_struct!(Tuple12, [a, b, c, d, e, f, g, h, i, j, k, l]);
 
-    // Names are removed, so only the types of fields remain, regardless of their number
-    assert_eq!(compact(Named10::METADATA), compact(Tuple10::METADATA));
-    assert_eq!(compact(Named11::METADATA), compact(Tuple11::METADATA));
+    // Enums only support variants with named fields or without fields, the latter can be written
+    // with braces, parentheses or neither
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(u8)]
+    enum EnumOfNamed {
+        A { pair: Named2 },
+        B { pair: Tuple2 },
+        C { singles: [Named1; 2] },
+    }
+
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(u8)]
+    enum EnumOfTuple {
+        X { first: Tuple2 },
+        Y { second: Named2 },
+        Z { third: [Tuple1; 2] },
+    }
+
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(u8)]
+    enum UnitVariants {
+        A,
+        B,
+    }
+
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(u8)]
+    #[expect(clippy::empty_enum_variants_with_brackets, reason = "Tested")]
+    enum BracedVariants {
+        A {},
+        B {},
+    }
+
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(u8)]
+    #[expect(clippy::empty_enum_variants_with_brackets, reason = "Tested")]
+    enum ParenthesizedVariants {
+        A(),
+        B(),
+    }
+
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(u8)]
+    enum MixedUnitVariant {
+        A { value: () },
+        B,
+    }
+
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(u8)]
+    #[expect(clippy::empty_enum_variants_with_brackets, reason = "Tested")]
+    enum MixedBracedVariant {
+        A { value: () },
+        B {},
+    }
+
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(u8)]
+    #[expect(clippy::empty_enum_variants_with_brackets, reason = "Tested")]
+    enum MixedParenthesizedVariant {
+        A { value: () },
+        B(),
+    }
+
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(C)]
+    struct OuterNamed {
+        empty: EmptyNamed,
+        pair: Named2,
+        many: [Named11; 2],
+        choice: EnumOfNamed,
+    }
+
+    #[derive(Copy, Clone, TrivialType)]
+    #[repr(C)]
+    struct OuterTuple(EmptyUnit, Tuple2, [Tuple11; 2], EnumOfTuple);
+
+    // Struct, enum, variant and field names are removed, so only the number of fields and their
+    // types remain, regardless of the number of fields
+    check_same_compact::<EmptyNamed, EmptyTuple>();
+    check_same_compact::<EmptyNamed, EmptyUnit>();
+    check_same_compact::<Named1, Tuple1>();
+    check_same_compact::<Named2, Tuple2>();
+    check_same_compact::<Named3, Tuple3>();
+    check_same_compact::<Named4, Tuple4>();
+    check_same_compact::<Named5, Tuple5>();
+    check_same_compact::<Named6, Tuple6>();
+    check_same_compact::<Named7, Tuple7>();
+    check_same_compact::<Named8, Tuple8>();
+    check_same_compact::<Named9, Tuple9>();
+    check_same_compact::<Named10, Tuple10>();
+    check_same_compact::<Named11, Tuple11>();
+    check_same_compact::<Named12, Tuple12>();
+    assert_ne!(compact(Named2::METADATA), compact(Tuple3::METADATA));
+
+    // Variants with braces or parentheses and no fields are the same as variants without fields
+    check_same_compact::<UnitVariants, BracedVariants>();
+    check_same_compact::<UnitVariants, ParenthesizedVariants>();
+    check_same_compact::<MixedUnitVariant, MixedBracedVariant>();
+    check_same_compact::<MixedUnitVariant, MixedParenthesizedVariant>();
+
+    // Nested types
+    check_same_compact::<[Named2; 3], [Tuple2; 3]>();
+    check_same_compact::<[Named11; 300], [Tuple11; 300]>();
+    check_same_compact::<Unaligned<Named2>, Unaligned<Tuple2>>();
+    check_same_compact::<MaybeData<Named2>, MaybeData<Tuple2>>();
+    check_same_compact::<VariableElements<Named2>, VariableElements<Tuple2>>();
+    check_same_compact::<VariableElements<Named11, 300>, VariableElements<Tuple11, 300>>();
+    check_same_compact::<EnumOfNamed, EnumOfTuple>();
+    check_same_compact::<OuterNamed, OuterTuple>();
 }
 
 #[test]
