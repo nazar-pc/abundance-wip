@@ -17,6 +17,10 @@ Breaking changes:
   `#[tmp]` storage
 * `FixedCapacityBytesU8::copy_from()` and `FixedCapacityBytesU16::copy_from()` no longer have an unused type parameter,
   previously they couldn't be called without specifying it
+* Derived `TrivialType` of structs with braces and no fields (`struct S {}`) uses the `Struct0` metadata kind,
+  previously it used `TupleStruct` with zero fields, because named fields were detected by the first field.
+  `IoTypeMetadataKind::compact()` turns `Struct0` into `TupleStruct` with zero fields, like other structs into tuple
+  structs, so compact metadata of such structs and fingerprints of methods that use them don't change
 
 Fixes:
 

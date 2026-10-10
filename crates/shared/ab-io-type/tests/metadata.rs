@@ -506,7 +506,8 @@ fn empty_structs() {
     #[repr(C)]
     struct EmptyUnit;
 
-    let expected = Expected::new(Kind::TupleStruct).name("Empty").byte(0);
+    // Compact metadata is the same for all empty structs
+    let expected = Expected::new(Kind::Struct0).name("Empty");
     let expected_compact = Expected::new(Kind::TupleStruct).name("").byte(0);
     check_trivial_type::<Empty>("Empty", &expected, &expected_compact);
 

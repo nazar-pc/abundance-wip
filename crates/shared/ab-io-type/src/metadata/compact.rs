@@ -28,8 +28,12 @@ pub(super) const fn compact_metadata<'i, 'o>(
             (input, output) = compact_struct(input, output, None, false)?;
         }
         IoTypeMetadataKind::Struct0 => {
-            *io_type_metadata_kind_output = io_type_metadata_kind_input;
+            // Convert struct with field names to tuple struct, there is no compact kind for a tuple
+            // struct without fields
+            *io_type_metadata_kind_output = IoTypeMetadataKind::TupleStruct as u8;
             (input, output) = compact_struct(input, output, Some(0), false)?;
+            // Number of fields after the struct name
+            *output.split_off_first_mut()? = 0;
         }
         IoTypeMetadataKind::Struct1 => {
             // Convert struct with field names to tuple struct

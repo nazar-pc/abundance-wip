@@ -282,12 +282,7 @@ fn parse_repr(
 
 fn generate_struct_metadata(ident: &Ident, data_struct: &DataStruct) -> Result<TokenStream, Error> {
     let num_fields = data_struct.fields.len();
-    let struct_with_fields = data_struct
-        .fields
-        .iter()
-        .next()
-        .is_some_and(|field| field.ident.is_some());
-    let (io_type_metadata, with_num_fields) = if struct_with_fields {
+    let (io_type_metadata, with_num_fields) = if matches!(data_struct.fields, Fields::Named(_)) {
         match num_fields {
             0..=10 => (format_ident!("Struct{num_fields}"), false),
             _ => (format_ident!("Struct"), true),
