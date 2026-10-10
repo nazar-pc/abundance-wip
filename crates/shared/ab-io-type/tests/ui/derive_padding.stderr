@@ -4,8 +4,7 @@ error[E0080]: evaluation panicked: Struct must not have implicit padding. Consid
 7 | #[derive(Copy, Clone, TrivialType)]
   |                       ^^^^^^^^^^^ evaluation of `_` failed here
 
-error[E0080]: evaluation panicked: assertion failed: size_of::<PaddedEnum>() ==
-                  type_details.recommended_capacity as ::core::primitive::usize
+error[E0080]: evaluation panicked: Enum must not have implicit padding. Consider reordering fields, adding `padding: [u8; N]` field where necessary or use `Unaligned<T>` wrapper for types with larger alignment to reduce it to one byte.
   --> tests/ui/derive_padding.rs:15:23
    |
 15 | #[derive(Copy, Clone, TrivialType)]

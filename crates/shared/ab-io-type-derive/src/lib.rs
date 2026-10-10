@@ -38,9 +38,9 @@ pub fn trivial_type_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
         };
 
     if repr_align.is_some() || repr_packed.is_some() {
-        return Error::new(
-            input.ident.span(),
-            "`TrivialType` doesn't allow `#[repr(align(N))]` or `#[repr(packed(N))]",
+        return Error::new_spanned(
+            repr_attr,
+            "`TrivialType` doesn't allow `#[repr(align(N))]` or `#[repr(packed(N))]`",
         )
         .to_compile_error()
         .into();
@@ -51,9 +51,9 @@ pub fn trivial_type_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
     let output = match &input.data {
         Data::Struct(data_struct) => {
             if !(repr_c || repr_transparent) {
-                return Error::new(
-                    input.ident.span(),
-                    "`TrivialType` on structs requires `#[repr(C)]` or `#[repr(transparent)]",
+                return Error::new_spanned(
+                    repr_attr,
+                    "`TrivialType` on structs requires `#[repr(C)]` or `#[repr(transparent)]`",
                 )
                 .into_compile_error()
                 .into();
@@ -115,8 +115,8 @@ pub fn trivial_type_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
         Data::Enum(data_enum) => {
             // Require defined size of the discriminant instead of allowing compiler to guess
             if repr_numeric != Some(8) {
-                return Error::new(
-                    input.generics.span(),
+                return Error::new_spanned(
+                    repr_attr,
                     "`TrivialType` derive for enums only supports `#[repr(u8)]`, ambiguous \
                     or larger discriminant size is not allowed",
                 )
@@ -161,6 +161,8 @@ pub fn trivial_type_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
 
             quote! {
                 const _: () = {
+                    #( #padding_assertions )*
+
                     // Assert that type doesn't exceed 32-bit size limit
                     assert!(
                         u32::MAX as ::core::primitive::usize >= ::core::mem::size_of::<#type_name>(),
@@ -177,8 +179,6 @@ pub fn trivial_type_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
                     assert!(remaining_metadata.is_empty());
                     assert!(size_of::<#type_name>() == type_details.recommended_capacity as ::core::primitive::usize);
                     assert!(align_of::<#type_name>() == type_details.alignment.get() as ::core::primitive::usize);
-
-                    #( #padding_assertions )*;
                 };
 
                 #[automatically_derived]
@@ -456,7 +456,7 @@ fn generate_inner_struct_metadata_header(
     let num_fields = u8::try_from(fields.len()).map_err(|_error| {
         Error::new(
             fields.span(),
-            format!("Must not have more than {} field", u8::MAX),
+            format!("Must not have more than {} fields", u8::MAX),
         )
     })?;
 
