@@ -1,0 +1,5 @@
+error: Variant must have named fields
+  --> tests/ui/derive_tuple_variant.rs:10:7
+   |
+10 |     B(u8),
+   |       ^^
