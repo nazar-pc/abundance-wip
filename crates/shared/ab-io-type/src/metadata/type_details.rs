@@ -210,11 +210,12 @@ pub(super) const fn decode_type_details(mut metadata: &[u8]) -> Option<(IoTypeDe
                 return None;
             }
 
-            (_, metadata) = decode_type_details(metadata)?;
+            let type_details;
+            (type_details, metadata) = decode_type_details(metadata)?;
             Some((
                 IoTypeDetails {
                     recommended_capacity: 0,
-                    alignment: NonZeroU8::new(1).expect("Not zero; qed"),
+                    alignment: type_details.alignment,
                 },
                 metadata,
             ))

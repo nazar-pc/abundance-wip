@@ -467,6 +467,14 @@ fn variable_elements() {
     let expected = Expected::new(Kind::VariableElements0).kind(Kind::U8);
     check_io_type::<VariableElements<u8>>(name, 0, 1, &expected, &expected);
 
+    // Alignment of elements, regardless of the recommended allocation
+    let expected = Expected::new(Kind::VariableElements0).kind(Kind::U128);
+    check_io_type::<VariableElements<u128>>(name, 0, 16, &expected, &expected);
+    let expected = Expected::new(Kind::VariableElements8b)
+        .byte(1)
+        .kind(Kind::U128);
+    check_io_type::<VariableElements<u128, 1>>(name, 16, 16, &expected, &expected);
+
     let (point, point_compact) = point();
     let expected = Expected::new(Kind::VariableElements8b)
         .byte(10)

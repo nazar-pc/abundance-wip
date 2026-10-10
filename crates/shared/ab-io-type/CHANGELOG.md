@@ -58,6 +58,9 @@ Fixes:
 * Derived `TrivialType` of enums that have both variants with and without fields (possible with zero-sized fields) now
   has well-formed metadata with the number of fields of every variant, previously the metadata was malformed when the
   first variant had no fields
+* `IoTypeMetadataKind::type_details()` now returns the alignment of elements for `VariableElements<T>` with the default
+  recommended allocation of 0, previously it returned 1, so data placed according to metadata, like inputs in
+  transaction payloads and buffers for outputs, could be misaligned
 
 # 0.2.0
 
