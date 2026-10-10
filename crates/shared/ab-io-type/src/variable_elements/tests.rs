@@ -1,5 +1,6 @@
 use crate::trivial_type::TrivialType;
 use crate::variable_elements::VariableElements;
+use core::mem::MaybeUninit;
 
 #[test]
 fn count() {
@@ -29,4 +30,27 @@ fn copy_from() {
 
     assert_eq!(dst_size, u64::SIZE);
     assert_eq!(dst_buffer, [1, 0, 0, 0, 0, 0, 0, 0]);
+}
+
+#[test]
+fn from_uninit() {
+    let mut buffer = [MaybeUninit::new(1_u32); 4];
+
+    {
+        let mut size = 0;
+        let mut elements = VariableElements::<u32>::from_uninit(&mut buffer, &mut size);
+
+        assert_eq!(elements.capacity(), 4 * u32::SIZE);
+        // SAFETY: The whole buffer is initialized
+        let initialized = unsafe { elements.assume_init(4 * u32::SIZE) };
+        assert_eq!(initialized.as_deref(), Some([1, 1, 1, 1].as_slice()));
+    }
+
+    {
+        let mut size = 4 * u32::SIZE;
+        let elements = VariableElements::<u32>::from_uninit(&mut buffer, &mut size);
+
+        assert_eq!(elements.capacity(), 4 * u32::SIZE);
+        assert_eq!(elements.get_initialized(), &[1, 1, 1, 1]);
+    }
 }

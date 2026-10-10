@@ -255,7 +255,7 @@ where
         uninit: &'a mut [MaybeUninit<<Self as IoType>::PointerType>],
         size: &'a mut u32,
     ) -> impl DerefMut<Target = Self> + 'a {
-        let capacity = uninit.len();
+        let capacity = uninit.len() * Element::SIZE as usize;
         debug_assert!(
             *size as usize <= capacity,
             "Size {size} must not exceed capacity {capacity}"

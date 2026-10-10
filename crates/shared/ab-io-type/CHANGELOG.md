@@ -14,6 +14,8 @@ Fixes:
 * `VariableElements::copy_from()` no longer reads and writes out of bounds, previously it used the size in bytes as the
   number of elements to copy
 * `VariableElements::count()` now returns the number of elements, previously it returned the size in bytes
+* `VariableElements::from_uninit()` now sets capacity in bytes, previously it used the number of elements, so only a
+  part of the buffer could be used and a size covering the whole buffer panicked in debug builds
 
 # 0.2.0
 
