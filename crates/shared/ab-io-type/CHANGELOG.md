@@ -26,6 +26,9 @@ Breaking changes:
 * `TrivialType` can no longer be derived for enums with explicit discriminants that are not equal to variant indices,
   metadata identifies variants by their index and doesn't record discriminants, so previously it didn't match values
   of such enums
+* `TrivialType` derive checks all `#[repr(..)]` attributes instead of only the first one and requires exactly
+  `#[repr(u8)]` for enums, previously `#[repr(C, u8)]` (which has different offsets of fields) was accepted and options
+  in other attributes were only rejected by assertions about metadata, if at all
 
 Fixes:
 

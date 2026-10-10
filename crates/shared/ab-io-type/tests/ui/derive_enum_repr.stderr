@@ -21,3 +21,21 @@ error: `TrivialType` doesn't allow `#[repr(align(N))]` or `#[repr(packed(N))]`
    |
 28 | #[repr(u8, align(2))]
    | ^^^^^^^^^^^^^^^^^^^^^
+
+error: `TrivialType` derive for enums only supports `#[repr(u8)]` without other options, `#[repr(C, u8)]` has different offsets of fields
+  --> tests/ui/derive_enum_repr.rs:36:1
+   |
+36 | #[repr(C, u8)]
+   | ^^^^^^^^^^^^^^
+
+error: `TrivialType` derive for enums only supports `#[repr(u8)]` without other options, `#[repr(C, u8)]` has different offsets of fields
+  --> tests/ui/derive_enum_repr.rs:45:1
+   |
+45 | #[repr(C)]
+   | ^^^^^^^^^^
+
+error: `TrivialType` doesn't allow `#[repr(align(N))]` or `#[repr(packed(N))]`
+  --> tests/ui/derive_enum_repr.rs:53:1
+   |
+53 | #[repr(align(2))]
+   | ^^^^^^^^^^^^^^^^^

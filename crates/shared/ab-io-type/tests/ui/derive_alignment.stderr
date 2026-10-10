@@ -1,6 +1,5 @@
-error[E0080]: evaluation panicked: assertion failed: align_of::<Packed>() ==
-                  type_details.alignment.get() as ::core::primitive::usize
- --> tests/ui/derive_alignment.rs:7:23
+error: `TrivialType` doesn't allow `#[repr(align(N))]` or `#[repr(packed(N))]`
+ --> tests/ui/derive_alignment.rs:9:1
   |
-7 | #[derive(Copy, Clone, TrivialType)]
-  |                       ^^^^^^^^^^^ evaluation of `_` failed here
+9 | #[repr(packed)]
+  | ^^^^^^^^^^^^^^^

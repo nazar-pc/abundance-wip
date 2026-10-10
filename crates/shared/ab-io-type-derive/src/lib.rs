@@ -8,6 +8,18 @@ use syn::{
     parse_macro_input,
 };
 
+/// Options of all `#[repr(..)]` attributes of a type, each with the attribute it is in
+#[derive(Default)]
+struct Repr<'a> {
+    c: Option<&'a Attribute>,
+    transparent: Option<&'a Attribute>,
+    u8: Option<&'a Attribute>,
+    /// Integer types other than `u8`
+    other_integer: Option<&'a Attribute>,
+    /// `align(N)`, `packed` or `packed(N)`
+    align_or_packed: Option<&'a Attribute>,
+}
+
 #[proc_macro_derive(TrivialType)]
 pub fn trivial_type_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -21,23 +33,27 @@ pub fn trivial_type_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
         .into();
     }
 
-    let maybe_repr_attr = input.attrs.iter().find(|attr| attr.path().is_ident("repr"));
+    let mut repr_attrs = input
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("repr"))
+        .peekable();
 
-    let Some(repr_attr) = maybe_repr_attr else {
+    let Some(&first_repr_attr) = repr_attrs.peek() else {
         return Error::new(input.ident.span(), "`TrivialType` requires `#[repr(..)]`")
             .to_compile_error()
             .into();
     };
 
-    let (repr_c, repr_transparent, repr_numeric, repr_align, repr_packed) =
-        match parse_repr(repr_attr) {
-            Ok(result) => result,
-            Err(error) => {
-                return error.to_compile_error().into();
-            }
-        };
+    // All `#[repr(..)]` attributes are combined by the compiler
+    let mut repr = Repr::default();
+    for repr_attr in repr_attrs {
+        if let Err(error) = parse_repr(&mut repr, repr_attr) {
+            return error.to_compile_error().into();
+        }
+    }
 
-    if repr_align.is_some() || repr_packed.is_some() {
+    if let Some(repr_attr) = repr.align_or_packed {
         return Error::new_spanned(
             repr_attr,
             "`TrivialType` doesn't allow `#[repr(align(N))]` or `#[repr(packed(N))]`",
@@ -50,9 +66,9 @@ pub fn trivial_type_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
 
     let output = match &input.data {
         Data::Struct(data_struct) => {
-            if !(repr_c || repr_transparent) {
+            if repr.c.is_none() && repr.transparent.is_none() {
                 return Error::new_spanned(
-                    repr_attr,
+                    repr.u8.or(repr.other_integer).unwrap_or(first_repr_attr),
                     "`TrivialType` on structs requires `#[repr(C)]` or `#[repr(transparent)]`",
                 )
                 .into_compile_error()
@@ -114,11 +130,26 @@ pub fn trivial_type_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
         }
         Data::Enum(data_enum) => {
             // Require defined size of the discriminant instead of allowing compiler to guess
-            if repr_numeric != Some(8) {
+            if repr.u8.is_none() || repr.other_integer.is_some() {
                 return Error::new_spanned(
-                    repr_attr,
+                    repr.other_integer
+                        .or(repr.c)
+                        .or(repr.transparent)
+                        .unwrap_or(first_repr_attr),
                     "`TrivialType` derive for enums only supports `#[repr(u8)]`, ambiguous \
                     or larger discriminant size is not allowed",
+                )
+                .to_compile_error()
+                .into();
+            }
+            // With `#[repr(u8)]` each variant is laid out like a `#[repr(C)]` struct with the
+            // discriminant as the first field, which padding assertions rely on, `#[repr(C, u8)]`
+            // has a different layout
+            if let Some(repr_attr) = repr.c.or(repr.transparent) {
+                return Error::new_spanned(
+                    repr_attr,
+                    "`TrivialType` derive for enums only supports `#[repr(u8)]` without other \
+                    options, `#[repr(C, u8)]` has different offsets of fields",
                 )
                 .to_compile_error()
                 .into();
@@ -236,44 +267,28 @@ pub fn trivial_type_derive(input: proc_macro::TokenStream) -> proc_macro::TokenS
     output.into()
 }
 
-#[expect(clippy::type_complexity, reason = "Private one-off function")]
-fn parse_repr(
-    repr_attr: &Attribute,
-) -> Result<(bool, bool, Option<u8>, Option<usize>, Option<usize>), Error> {
-    let mut repr_c = false;
-    let mut repr_transparent = false;
-    let mut repr_numeric = None::<u8>;
-    let mut repr_align = None::<usize>;
-    let mut repr_packed = None::<usize>;
-
+/// Parse options of a `#[repr(..)]` attribute into `repr`, which can contain options of other
+/// `#[repr(..)]` attributes of the same type
+fn parse_repr<'a>(repr: &mut Repr<'a>, repr_attr: &'a Attribute) -> Result<(), Error> {
     // Based on https://docs.rs/syn/2.0.93/syn/struct.Attribute.html#method.parse_nested_meta
     repr_attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("C") {
-            repr_c = true;
+            repr.c = Some(repr_attr);
             return Ok(());
         }
         if meta.path.is_ident("u8") {
-            repr_numeric.replace(8);
+            repr.u8 = Some(repr_attr);
             return Ok(());
         }
-        if meta.path.is_ident("u16") {
-            repr_numeric.replace(16);
-            return Ok(());
-        }
-        if meta.path.is_ident("u32") {
-            repr_numeric.replace(32);
-            return Ok(());
-        }
-        if meta.path.is_ident("u64") {
-            repr_numeric.replace(64);
-            return Ok(());
-        }
-        if meta.path.is_ident("u128") {
-            repr_numeric.replace(128);
+        if ["u16", "u32", "u64", "u128"]
+            .into_iter()
+            .any(|integer| meta.path.is_ident(integer))
+        {
+            repr.other_integer = Some(repr_attr);
             return Ok(());
         }
         if meta.path.is_ident("transparent") {
-            repr_transparent = true;
+            repr.transparent = Some(repr_attr);
             return Ok(());
         }
 
@@ -282,8 +297,8 @@ fn parse_repr(
             let content;
             parenthesized!(content in meta.input);
             let lit = content.parse::<LitInt>()?;
-            let n = lit.base10_parse::<usize>()?;
-            repr_align = Some(n);
+            lit.base10_parse::<usize>()?;
+            repr.align_or_packed = Some(repr_attr);
             return Ok(());
         }
 
@@ -293,24 +308,14 @@ fn parse_repr(
                 let content;
                 parenthesized!(content in meta.input);
                 let lit = content.parse::<LitInt>()?;
-                let n = lit.base10_parse::<usize>()?;
-                repr_packed = Some(n);
-            } else {
-                repr_packed = Some(1);
+                lit.base10_parse::<usize>()?;
             }
+            repr.align_or_packed = Some(repr_attr);
             return Ok(());
         }
 
         Err(meta.error("Unsupported `#[repr(..)]`"))
-    })?;
-
-    Ok((
-        repr_c,
-        repr_transparent,
-        repr_numeric,
-        repr_align,
-        repr_packed,
-    ))
+    })
 }
 
 /// Replace `Self` in `tokens` with `type_name`, so that an expression from the definition of the

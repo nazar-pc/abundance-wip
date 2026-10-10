@@ -21,6 +21,14 @@ struct Rust {
     value: u64,
 }
 
+// All `#[repr(..)]` attributes are checked, not just the first one
+#[derive(Copy, Clone, TrivialType)]
+#[repr(C)]
+#[repr(align(8))]
+struct SeparateAligned {
+    value: u64,
+}
+
 // `#[repr(u8)]` is not valid for structs either, rustc rejects it too
 #[derive(Copy, Clone, TrivialType)]
 #[repr(u8)]
