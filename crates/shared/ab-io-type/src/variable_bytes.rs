@@ -163,7 +163,11 @@ unsafe impl<const RECOMMENDED_ALLOCATION: u32> IoType for VariableBytes<RECOMMEN
     }
 }
 
-impl<const RECOMMENDED_ALLOCATION: u32> IoTypeOptional for VariableBytes<RECOMMENDED_ALLOCATION> {}
+// SAFETY: Size `0` means there are no initialized bytes, contents are only accessed up to the size
+unsafe impl<const RECOMMENDED_ALLOCATION: u32> IoTypeOptional
+    for VariableBytes<RECOMMENDED_ALLOCATION>
+{
+}
 
 impl<const RECOMMENDED_ALLOCATION: u32> VariableBytes<RECOMMENDED_ALLOCATION> {
     /// Create a new shared instance from provided memory buffer.

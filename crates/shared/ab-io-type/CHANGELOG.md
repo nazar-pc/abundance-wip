@@ -12,6 +12,9 @@ Breaking changes:
   the buffer is larger than `u32::MAX` bytes, previously a non-zero size exposed uninitialized memory as initialized
   (`VariableBytes` and `VariableElements` accepted it even in debug builds) and capacity of a larger buffer was
   truncated
+* `IoTypeOptional` is now an `unsafe` trait, previously it could be implemented for a type without a valid empty state,
+  like any `TrivialType`, which gave `#[contract]` methods access to uninitialized memory of empty `#[slot]` and
+  `#[tmp]` storage
 
 Fixes:
 

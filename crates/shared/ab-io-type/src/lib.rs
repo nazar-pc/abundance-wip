@@ -246,4 +246,11 @@ pub unsafe trait IoType {
 ///
 /// This means that zero bytes size is a valid invariant. This type is never implemented for types
 /// implementing [`TrivialType`] because they always have fixed size, and it is not zero.
-pub trait IoTypeOptional: IoType {}
+///
+/// # Safety
+/// Size `0` must be a valid state that doesn't require any initialized memory:
+/// [`IoType::from_ptr()`] and [`IoType::from_mut_ptr()`] must be sound to call with `size` of `0`
+/// and uninitialized memory behind the pointer, and must not expose that memory as initialized.
+/// `#[contract]` relies on this to give access to `#[slot]` and `#[tmp]` storage that may be
+/// empty.
+pub unsafe trait IoTypeOptional: IoType {}
