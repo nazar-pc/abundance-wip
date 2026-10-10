@@ -64,6 +64,11 @@ impl IoTypeDetails {
 /// This metadata is enough to fully reconstruct the hierarchy of the type to generate language
 /// bindings, auto-generate UI forms, etc.
 ///
+/// Each type has exactly one encoding: numbers are always encoded with the same width, there are
+/// no dedicated kinds for specific values, and decoders reject [`Self::Enum`] for enums that must
+/// be encoded as [`Self::EnumNoFields`]. This keeps decoders simple and ensures that the same type
+/// always has the same compact metadata, which fingerprints are derived from.
+///
 /// [`TrivialType::METADATA`]: crate::trivial_type::TrivialType::METADATA
 /// [`IoType::METADATA`]: crate::IoType::METADATA
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -105,39 +110,6 @@ pub enum IoTypeMetadataKind {
     /// * Field name as UTF-8 bytes
     /// * Recursive metadata of the field's type
     Struct,
-    /// Similar to [`Self::Struct`], but for exactly `0` struct fields and thus skips number of
-    /// fields after struct name
-    Struct0,
-    /// Similar to [`Self::Struct`], but for exactly `1` struct fields and thus skips number of
-    /// fields after struct name
-    Struct1,
-    /// Similar to [`Self::Struct`], but for exactly `2` struct fields and thus skips number of
-    /// fields after struct name
-    Struct2,
-    /// Similar to [`Self::Struct`], but for exactly `3` struct fields and thus skips number of
-    /// fields after struct name
-    Struct3,
-    /// Similar to [`Self::Struct`], but for exactly `4` struct fields and thus skips number of
-    /// fields after struct name
-    Struct4,
-    /// Similar to [`Self::Struct`], but for exactly `5` struct fields and thus skips number of
-    /// fields after struct name
-    Struct5,
-    /// Similar to [`Self::Struct`], but for exactly `6` struct fields and thus skips number of
-    /// fields after struct name
-    Struct6,
-    /// Similar to [`Self::Struct`], but for exactly `7` struct fields and thus skips number of
-    /// fields after struct name
-    Struct7,
-    /// Similar to [`Self::Struct`], but for exactly `8` struct fields and thus skips number of
-    /// fields after struct name
-    Struct8,
-    /// Similar to [`Self::Struct`], but for exactly `9` struct fields and thus skips number of
-    /// fields after struct name
-    Struct9,
-    /// Similar to [`Self::Struct`], but for exactly `10` struct fields and thus skips number of
-    /// fields after struct name
-    Struct10,
     /// `struct S(..);`
     ///
     /// Tuple structs are encoded af follows:
@@ -148,77 +120,20 @@ pub enum IoTypeMetadataKind {
     /// Each field is encoded follows:
     /// * Recursive metadata of the field's type
     TupleStruct,
-    /// Similar to [`Self::TupleStruct`], but for exactly `1` struct fields and thus skips number of
-    /// fields after struct name
-    TupleStruct1,
-    /// Similar to [`Self::TupleStruct`], but for exactly `2` struct fields and thus skips number of
-    /// fields after struct name
-    TupleStruct2,
-    /// Similar to [`Self::TupleStruct`], but for exactly `3` struct fields and thus skips number of
-    /// fields after struct name
-    TupleStruct3,
-    /// Similar to [`Self::TupleStruct`], but for exactly `4` struct fields and thus skips number of
-    /// fields after struct name
-    TupleStruct4,
-    /// Similar to [`Self::TupleStruct`], but for exactly `5` struct fields and thus skips number of
-    /// fields after struct name
-    TupleStruct5,
-    /// Similar to [`Self::TupleStruct`], but for exactly `6` struct fields and thus skips number of
-    /// fields after struct name
-    TupleStruct6,
-    /// Similar to [`Self::TupleStruct`], but for exactly `7` struct fields and thus skips number of
-    /// fields after struct name
-    TupleStruct7,
-    /// Similar to [`Self::TupleStruct`], but for exactly `8` struct fields and thus skips number of
-    /// fields after struct name
-    TupleStruct8,
-    /// Similar to [`Self::TupleStruct`], but for exactly `9` struct fields and thus skips number of
-    /// fields after struct name
-    TupleStruct9,
-    /// Similar to [`Self::TupleStruct`], but for exactly `10` struct fields and thus skips number
-    /// of fields after struct name
-    TupleStruct10,
     /// `enum E { Variant {..} }`
     ///
-    /// Enums with variants that have fields are encoded as follows:
+    /// Enums with at least one variant that has fields are encoded as follows:
     /// * Length of enum name in bytes (u8)
     /// * Enum name as UTF-8 bytes
     /// * Number of variants (u8)
     /// * Each enum variant as if it was a struct with fields, see [`Self::Struct`] for details
+    ///
+    /// Decoders reject enums without fields in any variant, which are encoded as
+    /// [`Self::EnumNoFields`].
     Enum,
-    /// Similar to [`Self::Enum`], but for exactly `1` enum variants and thus skips number of
-    /// variants after enum name
-    Enum1,
-    /// Similar to [`Self::Enum`], but for exactly `2` enum variants and thus skips number of
-    /// variants after enum name
-    Enum2,
-    /// Similar to [`Self::Enum`], but for exactly `3` enum variants and thus skips number of
-    /// variants after enum name
-    Enum3,
-    /// Similar to [`Self::Enum`], but for exactly `4` enum variants and thus skips number of
-    /// variants after enum name
-    Enum4,
-    /// Similar to [`Self::Enum`], but for exactly `5` enum variants and thus skips number of
-    /// variants after enum name
-    Enum5,
-    /// Similar to [`Self::Enum`], but for exactly `6` enum variants and thus skips number of
-    /// variants after enum name
-    Enum6,
-    /// Similar to [`Self::Enum`], but for exactly `7` enum variants and thus skips number of
-    /// variants after enum name
-    Enum7,
-    /// Similar to [`Self::Enum`], but for exactly `8` enum variants and thus skips number of
-    /// variants after enum name
-    Enum8,
-    /// Similar to [`Self::Enum`], but for exactly `9` enum variants and thus skips number of
-    /// variants after enum name
-    Enum9,
-    /// Similar to [`Self::Enum`], but for exactly `10` enum variants and thus skips number of
-    /// variants after enum name
-    Enum10,
     /// `enum E { A, B }`
     ///
-    /// Enums with variants that have no fields are encoded as follows:
+    /// Enums without fields in any variant are encoded as follows:
     /// * Length of enum name in bytes (u8)
     /// * Enum name as UTF-8 bytes
     /// * Number of variants (u8)
@@ -227,138 +142,23 @@ pub enum IoTypeMetadataKind {
     /// * Length of the variant name in bytes (u8)
     /// * Variant name as UTF-8 bytes
     EnumNoFields,
-    /// Similar to [`Self::EnumNoFields`], but for exactly `1` enum variants and thus skips number
-    /// of variants after enum name
-    EnumNoFields1,
-    /// Similar to [`Self::EnumNoFields`], but for exactly `2` enum variants and thus skips number
-    /// of variants after enum name
-    EnumNoFields2,
-    /// Similar to [`Self::EnumNoFields`], but for exactly `3` enum variants and thus skips number
-    /// of variants after enum name
-    EnumNoFields3,
-    /// Similar to [`Self::EnumNoFields`], but for exactly `4` enum variants and thus skips number
-    /// of variants after enum name
-    EnumNoFields4,
-    /// Similar to [`Self::EnumNoFields`], but for exactly `5` enum variants and thus skips number
-    /// of variants after enum name
-    EnumNoFields5,
-    /// Similar to [`Self::EnumNoFields`], but for exactly `6` enum variants and thus skips number
-    /// of variants after enum name
-    EnumNoFields6,
-    /// Similar to [`Self::EnumNoFields`], but for exactly `7` enum variants and thus skips number
-    /// of variants after enum name
-    EnumNoFields7,
-    /// Similar to [`Self::EnumNoFields`], but for exactly `8` enum variants and thus skips number
-    /// of variants after enum name
-    EnumNoFields8,
-    /// Similar to [`Self::EnumNoFields`], but for exactly `9` enum variants and thus skips number
-    /// of variants after enum name
-    EnumNoFields9,
-    /// Similar to [`Self::EnumNoFields`], but for exactly `10` enum variants and thus skips number
-    /// of variants after enum name
-    EnumNoFields10,
-    /// Array `[T; N]` with up to 2^8 elements.
-    ///
-    /// Encoded as follows:
-    /// * 1 byte number of elements
-    /// * Recursive metadata of a contained type
-    Array8b,
-    /// Array `[T; N]` with up to 2^16 elements.
-    ///
-    /// Encoded as follows:
-    /// * 2 bytes number of elements (little-endian)
-    /// * Recursive metadata of a contained type
-    Array16b,
-    /// Array `[T; N]` with up to 2^32 elements.
+    /// Array `[T; N]`.
     ///
     /// Encoded as follows:
     /// * 4 bytes number of elements (little-endian)
     /// * Recursive metadata of a contained type
-    Array32b,
-    /// Compact alias for `[u8; 8]`
-    ArrayU8x8,
-    /// Compact alias for `[u8; 16]`
-    ArrayU8x16,
-    /// Compact alias for `[u8; 32]`
-    ArrayU8x32,
-    /// Compact alias for `[u8; 64]`
-    ArrayU8x64,
-    /// Compact alias for `[u8; 128]`
-    ArrayU8x128,
-    /// Compact alias for `[u8; 256]`
-    ArrayU8x256,
-    /// Compact alias for `[u8; 512]`
-    ArrayU8x512,
-    /// Compact alias for `[u8; 1024]`
-    ArrayU8x1024,
-    /// Compact alias for `[u8; 2048]`
-    ArrayU8x2048,
-    /// Compact alias for `[u8; 4096]`
-    ArrayU8x4096,
-    /// Variable bytes with up to 2^8 bytes recommended allocation.
-    ///
-    /// Encoded as follows:
-    /// * 1 byte recommended allocation in bytes
-    VariableBytes8b,
-    /// Variable bytes with up to 2^16 bytes recommended allocation.
-    ///
-    /// Encoded as follows:
-    /// * 2 bytes recommended allocation in bytes (little-endian)
-    VariableBytes16b,
-    /// Variable bytes with up to 2^32 bytes recommended allocation.
+    Array,
+    /// [`VariableBytes`](crate::variable_bytes::VariableBytes).
     ///
     /// Encoded as follows:
     /// * 4 bytes recommended allocation in bytes (little-endian)
-    VariableBytes32b,
-    /// Compact alias [`VariableBytes<0>`](crate::variable_bytes::VariableBytes)
-    VariableBytes0,
-    /// Compact alias [`VariableBytes<512>`](crate::variable_bytes::VariableBytes)
-    VariableBytes512,
-    /// Compact alias [`VariableBytes<1024>`](crate::variable_bytes::VariableBytes)
-    VariableBytes1024,
-    /// Compact alias [`VariableBytes<2048>`](crate::variable_bytes::VariableBytes)
-    VariableBytes2048,
-    /// Compact alias [`VariableBytes<4096>`](crate::variable_bytes::VariableBytes)
-    VariableBytes4096,
-    /// Compact alias [`VariableBytes<8192>`](crate::variable_bytes::VariableBytes)
-    VariableBytes8192,
-    /// Compact alias [`VariableBytes<16384>`](crate::variable_bytes::VariableBytes)
-    VariableBytes16384,
-    /// Compact alias [`VariableBytes<32768>`](crate::variable_bytes::VariableBytes)
-    VariableBytes32768,
-    /// Compact alias [`VariableBytes<65536>`](crate::variable_bytes::VariableBytes)
-    VariableBytes65536,
-    /// Compact alias [`VariableBytes<131072>`](crate::variable_bytes::VariableBytes)
-    VariableBytes131072,
-    /// Compact alias [`VariableBytes<262144>`](crate::variable_bytes::VariableBytes)
-    VariableBytes262144,
-    /// Compact alias [`VariableBytes<524288>`](crate::variable_bytes::VariableBytes)
-    VariableBytes524288,
-    /// Compact alias [`VariableBytes<1048576>`](crate::variable_bytes::VariableBytes)
-    VariableBytes1048576,
-    /// Variable elements with up to 2^8 elements recommended allocation.
-    ///
-    /// Encoded as follows:
-    /// * 1 byte recommended allocation in elements
-    /// * Recursive metadata of a contained type
-    VariableElements8b,
-    /// Variable elements with up to 2^16 elements recommended allocation.
-    ///
-    /// Encoded as follows:
-    /// * 2 bytes recommended allocation in elements (little-endian)
-    /// * Recursive metadata of a contained type
-    VariableElements16b,
-    /// Variable elements with up to 2^32 elements recommended allocation.
+    VariableBytes,
+    /// [`VariableElements`](crate::variable_elements::VariableElements).
     ///
     /// Encoded as follows:
     /// * 4 bytes recommended allocation in elements (little-endian)
     /// * Recursive metadata of a contained type
-    VariableElements32b,
-    /// Compact alias [`VariableElements<T, 0>`](crate::variable_elements::VariableElements)
-    ///
-    /// Encoded as follows:
-    /// * Recursive metadata of a contained type
-    VariableElements0,
+    VariableElements,
     /// Fixed capacity bytes with up to 2^8 bytes capacity.
     ///
     /// Encoded as follows:
@@ -413,88 +213,17 @@ const impl TryFrom<u8> for IoTypeMetadataKind {
             10 => Self::I64,
             11 => Self::I128,
             12 => Self::Struct,
-            13 => Self::Struct0,
-            14 => Self::Struct1,
-            15 => Self::Struct2,
-            16 => Self::Struct3,
-            17 => Self::Struct4,
-            18 => Self::Struct5,
-            19 => Self::Struct6,
-            20 => Self::Struct7,
-            21 => Self::Struct8,
-            22 => Self::Struct9,
-            23 => Self::Struct10,
-            24 => Self::TupleStruct,
-            25 => Self::TupleStruct1,
-            26 => Self::TupleStruct2,
-            27 => Self::TupleStruct3,
-            28 => Self::TupleStruct4,
-            29 => Self::TupleStruct5,
-            30 => Self::TupleStruct6,
-            31 => Self::TupleStruct7,
-            32 => Self::TupleStruct8,
-            33 => Self::TupleStruct9,
-            34 => Self::TupleStruct10,
-            35 => Self::Enum,
-            36 => Self::Enum1,
-            37 => Self::Enum2,
-            38 => Self::Enum3,
-            39 => Self::Enum4,
-            40 => Self::Enum5,
-            41 => Self::Enum6,
-            42 => Self::Enum7,
-            43 => Self::Enum8,
-            44 => Self::Enum9,
-            45 => Self::Enum10,
-            46 => Self::EnumNoFields,
-            47 => Self::EnumNoFields1,
-            48 => Self::EnumNoFields2,
-            49 => Self::EnumNoFields3,
-            50 => Self::EnumNoFields4,
-            51 => Self::EnumNoFields5,
-            52 => Self::EnumNoFields6,
-            53 => Self::EnumNoFields7,
-            54 => Self::EnumNoFields8,
-            55 => Self::EnumNoFields9,
-            56 => Self::EnumNoFields10,
-            57 => Self::Array8b,
-            58 => Self::Array16b,
-            59 => Self::Array32b,
-            60 => Self::ArrayU8x8,
-            61 => Self::ArrayU8x16,
-            62 => Self::ArrayU8x32,
-            63 => Self::ArrayU8x64,
-            64 => Self::ArrayU8x128,
-            65 => Self::ArrayU8x256,
-            66 => Self::ArrayU8x512,
-            67 => Self::ArrayU8x1024,
-            68 => Self::ArrayU8x2048,
-            69 => Self::ArrayU8x4096,
-            70 => Self::VariableBytes8b,
-            71 => Self::VariableBytes16b,
-            72 => Self::VariableBytes32b,
-            73 => Self::VariableBytes0,
-            74 => Self::VariableBytes512,
-            75 => Self::VariableBytes1024,
-            76 => Self::VariableBytes2048,
-            77 => Self::VariableBytes4096,
-            78 => Self::VariableBytes8192,
-            79 => Self::VariableBytes16384,
-            80 => Self::VariableBytes32768,
-            81 => Self::VariableBytes65536,
-            82 => Self::VariableBytes131072,
-            83 => Self::VariableBytes262144,
-            84 => Self::VariableBytes524288,
-            85 => Self::VariableBytes1048576,
-            86 => Self::VariableElements8b,
-            87 => Self::VariableElements16b,
-            88 => Self::VariableElements32b,
-            89 => Self::VariableElements0,
-            90 => Self::FixedCapacityBytes8b,
-            91 => Self::FixedCapacityBytes16b,
-            92 => Self::FixedCapacityString8b,
-            93 => Self::FixedCapacityString16b,
-            94 => Self::Unaligned,
+            13 => Self::TupleStruct,
+            14 => Self::Enum,
+            15 => Self::EnumNoFields,
+            16 => Self::Array,
+            17 => Self::VariableBytes,
+            18 => Self::VariableElements,
+            19 => Self::FixedCapacityBytes8b,
+            20 => Self::FixedCapacityBytes16b,
+            21 => Self::FixedCapacityString8b,
+            22 => Self::FixedCapacityString16b,
+            23 => Self::Unaligned,
             _ => {
                 return Err(());
             }
@@ -532,6 +261,9 @@ impl IoTypeMetadataKind {
     /// Decode type name.
     ///
     /// Expected to be UTF-8, but must be parsed before printed as text, which is somewhat costly.
+    ///
+    /// The whole type is decoded, so `None` is returned for the same invalid metadata as in
+    /// [`Self::type_details()`].
     #[inline]
     pub const fn type_name(metadata: &[u8]) -> Option<&[u8]> {
         type_name(metadata)

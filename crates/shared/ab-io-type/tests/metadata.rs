@@ -153,9 +153,19 @@ fn check_decoding(
     for length in 0..metadata.len() {
         let truncated = &metadata[..length];
 
+        assert!(Kind::type_name(truncated).is_none());
         assert!(Kind::type_details(truncated).is_none());
         assert!(Kind::compact(truncated, &mut compact_buffer).is_none());
     }
+}
+
+/// Check that metadata doesn't decode
+#[track_caller]
+fn check_rejected(metadata: &[u8]) {
+    assert!(Kind::type_name(metadata).is_none());
+    assert!(Kind::type_details(metadata).is_none());
+    let mut compact_buffer = [0; MAX_METADATA_CAPACITY];
+    assert!(Kind::compact(metadata, &mut compact_buffer).is_none());
 }
 
 /// Check `METADATA` of a [`TrivialType`] and its decoding, see [`check_decoding()`]
@@ -203,14 +213,16 @@ where
 
 /// Expected metadata and compact metadata of [`Point`]
 fn point() -> (Expected, Expected) {
-    let expected = Expected::new(Kind::Struct2)
+    let expected = Expected::new(Kind::Struct)
         .name("Point")
+        .byte(2)
         .name("x")
         .kind(Kind::U8)
         .name("y")
         .kind(Kind::U8);
-    let expected_compact = Expected::new(Kind::TupleStruct2)
+    let expected_compact = Expected::new(Kind::TupleStruct)
         .name("")
+        .byte(2)
         .kind(Kind::U8)
         .kind(Kind::U8);
 
@@ -219,19 +231,14 @@ fn point() -> (Expected, Expected) {
 
 /// Expected metadata and compact metadata of a struct declared with [`named_struct!`] or
 /// [`tuple_struct!`] using the first `field_count` of [`FIELD_NAMES`]
-fn u8_struct(
-    kind: Kind,
-    compact_kind: Kind,
-    name: &str,
-    field_count: u8,
-    named: bool,
-) -> (Expected, Expected) {
-    let mut expected = Expected::new(kind).name(name);
-    let mut expected_compact = Expected::new(compact_kind).name("");
-    if matches!(kind, Kind::Struct | Kind::TupleStruct) {
-        expected = expected.byte(field_count);
-        expected_compact = expected_compact.byte(field_count);
-    }
+fn u8_struct(name: &str, field_count: u8, named: bool) -> (Expected, Expected) {
+    let kind = if named {
+        Kind::Struct
+    } else {
+        Kind::TupleStruct
+    };
+    let mut expected = Expected::new(kind).name(name).byte(field_count);
+    let mut expected_compact = Expected::new(Kind::TupleStruct).name("").byte(field_count);
 
     for field_name in &FIELD_NAMES[..usize::from(field_count)] {
         if named {
@@ -246,13 +253,14 @@ fn u8_struct(
 
 /// Expected metadata and compact metadata of an enum declared with [`fieldless_enum!`] or
 /// [`data_enum!`] using the first `variant_count` of [`VARIANT_NAMES`]
-fn u8_enum(kind: Kind, name: &str, variant_count: u8, with_fields: bool) -> (Expected, Expected) {
-    let mut expected = Expected::new(kind).name(name);
-    let mut expected_compact = Expected::new(kind).name("");
-    if matches!(kind, Kind::Enum | Kind::EnumNoFields) {
-        expected = expected.byte(variant_count);
-        expected_compact = expected_compact.byte(variant_count);
-    }
+fn u8_enum(name: &str, variant_count: u8, with_fields: bool) -> (Expected, Expected) {
+    let kind = if with_fields {
+        Kind::Enum
+    } else {
+        Kind::EnumNoFields
+    };
+    let mut expected = Expected::new(kind).name(name).byte(variant_count);
+    let mut expected_compact = Expected::new(kind).name("").byte(variant_count);
 
     for variant_name in &VARIANT_NAMES[..usize::from(variant_count)] {
         expected = expected.name(variant_name);
@@ -268,41 +276,41 @@ fn u8_enum(kind: Kind, name: &str, variant_count: u8, with_fields: bool) -> (Exp
 
 /// Check `METADATA` of a struct declared with [`named_struct!`], see [`u8_struct()`]
 #[track_caller]
-fn check_named_struct<T>(name: &str, field_count: u8, kind: Kind, compact_kind: Kind)
+fn check_named_struct<T>(name: &str, field_count: u8)
 where
     T: TrivialType,
 {
-    let (expected, expected_compact) = u8_struct(kind, compact_kind, name, field_count, true);
+    let (expected, expected_compact) = u8_struct(name, field_count, true);
     check_trivial_type::<T>(name, &expected, &expected_compact);
 }
 
 /// Check `METADATA` of a struct declared with [`tuple_struct!`], see [`u8_struct()`]
 #[track_caller]
-fn check_tuple_struct<T>(name: &str, field_count: u8, kind: Kind)
+fn check_tuple_struct<T>(name: &str, field_count: u8)
 where
     T: TrivialType,
 {
-    let (expected, expected_compact) = u8_struct(kind, kind, name, field_count, false);
+    let (expected, expected_compact) = u8_struct(name, field_count, false);
     check_trivial_type::<T>(name, &expected, &expected_compact);
 }
 
 /// Check `METADATA` of an enum declared with [`fieldless_enum!`], see [`u8_enum()`]
 #[track_caller]
-fn check_fieldless_enum<T>(name: &str, variant_count: u8, kind: Kind)
+fn check_fieldless_enum<T>(name: &str, variant_count: u8)
 where
     T: TrivialType,
 {
-    let (expected, expected_compact) = u8_enum(kind, name, variant_count, false);
+    let (expected, expected_compact) = u8_enum(name, variant_count, false);
     check_trivial_type::<T>(name, &expected, &expected_compact);
 }
 
 /// Check `METADATA` of an enum declared with [`data_enum!`], see [`u8_enum()`]
 #[track_caller]
-fn check_data_enum<T>(name: &str, variant_count: u8, kind: Kind)
+fn check_data_enum<T>(name: &str, variant_count: u8)
 where
     T: TrivialType,
 {
-    let (expected, expected_compact) = u8_enum(kind, name, variant_count, true);
+    let (expected, expected_compact) = u8_enum(name, variant_count, true);
     check_trivial_type::<T>(name, &expected, &expected_compact);
 }
 
@@ -333,69 +341,54 @@ fn primitives() {
 
 #[test]
 fn arrays_of_u8() {
-    // Sizes with a dedicated metadata kind
-    let expected = Expected::new(Kind::ArrayU8x8);
-    check_trivial_type::<[u8; 8]>("[u8; 8]", &expected, &expected);
-    let expected = Expected::new(Kind::ArrayU8x16);
-    check_trivial_type::<[u8; 16]>("[u8; 16]", &expected, &expected);
-    let expected = Expected::new(Kind::ArrayU8x32);
-    check_trivial_type::<[u8; 32]>("[u8; 32]", &expected, &expected);
-    let expected = Expected::new(Kind::ArrayU8x64);
-    check_trivial_type::<[u8; 64]>("[u8; 64]", &expected, &expected);
-    let expected = Expected::new(Kind::ArrayU8x128);
-    check_trivial_type::<[u8; 128]>("[u8; 128]", &expected, &expected);
-    let expected = Expected::new(Kind::ArrayU8x256);
-    check_trivial_type::<[u8; 256]>("[u8; 256]", &expected, &expected);
-    let expected = Expected::new(Kind::ArrayU8x512);
-    check_trivial_type::<[u8; 512]>("[u8; 512]", &expected, &expected);
-    let expected = Expected::new(Kind::ArrayU8x1024);
-    check_trivial_type::<[u8; 1024]>("[u8; 1024]", &expected, &expected);
-    let expected = Expected::new(Kind::ArrayU8x2048);
-    check_trivial_type::<[u8; 2048]>("[u8; 2048]", &expected, &expected);
-    let expected = Expected::new(Kind::ArrayU8x4096);
-    check_trivial_type::<[u8; 4096]>("[u8; 4096]", &expected, &expected);
-
-    // Other sizes, with the number of elements in 1, 2 or 4 bytes
-    let expected = Expected::new(Kind::Array8b).byte(0).kind(Kind::U8);
+    // The number of elements is always encoded in 4 bytes, there are no dedicated kinds for
+    // specific sizes
+    let expected = Expected::new(Kind::Array).u32(0).kind(Kind::U8);
     check_trivial_type::<[u8; 0]>("[T; N]", &expected, &expected);
-    let expected = Expected::new(Kind::Array8b).byte(1).kind(Kind::U8);
+    let expected = Expected::new(Kind::Array).u32(1).kind(Kind::U8);
     check_trivial_type::<[u8; 1]>("[T; N]", &expected, &expected);
-    let expected = Expected::new(Kind::Array8b).byte(7).kind(Kind::U8);
-    check_trivial_type::<[u8; 7]>("[T; N]", &expected, &expected);
-    let expected = Expected::new(Kind::Array8b).byte(255).kind(Kind::U8);
+    let expected = Expected::new(Kind::Array).u32(8).kind(Kind::U8);
+    check_trivial_type::<[u8; 8]>("[T; N]", &expected, &expected);
+    let expected = Expected::new(Kind::Array).u32(32).kind(Kind::U8);
+    check_trivial_type::<[u8; 32]>("[T; N]", &expected, &expected);
+    let expected = Expected::new(Kind::Array).u32(255).kind(Kind::U8);
     check_trivial_type::<[u8; 255]>("[T; N]", &expected, &expected);
-    let expected = Expected::new(Kind::Array16b).u16(257).kind(Kind::U8);
-    check_trivial_type::<[u8; 257]>("[T; N]", &expected, &expected);
-    let expected = Expected::new(Kind::Array16b).u16(2028).kind(Kind::U8);
-    check_trivial_type::<[u8; 2028]>("[T; N]", &expected, &expected);
-    let expected = Expected::new(Kind::Array16b).u16(65_535).kind(Kind::U8);
+    let expected = Expected::new(Kind::Array).u32(256).kind(Kind::U8);
+    check_trivial_type::<[u8; 256]>("[T; N]", &expected, &expected);
+    let expected = Expected::new(Kind::Array).u32(2048).kind(Kind::U8);
+    check_trivial_type::<[u8; 2048]>("[T; N]", &expected, &expected);
+    let expected = Expected::new(Kind::Array).u32(65_535).kind(Kind::U8);
     check_trivial_type::<[u8; 65_535]>("[T; N]", &expected, &expected);
-    let expected = Expected::new(Kind::Array32b).u32(65_536).kind(Kind::U8);
+    let expected = Expected::new(Kind::Array).u32(65_536).kind(Kind::U8);
     check_trivial_type::<[u8; 65_536]>("[T; N]", &expected, &expected);
-    let expected = Expected::new(Kind::Array32b).u32(70_000).kind(Kind::U8);
+    let expected = Expected::new(Kind::Array).u32(70_000).kind(Kind::U8);
     check_trivial_type::<[u8; 70_000]>("[T; N]", &expected, &expected);
 }
 
 #[test]
 fn arrays_of_other_types() {
-    let expected = Expected::new(Kind::Array8b).byte(8).kind(Kind::U16);
+    let expected = Expected::new(Kind::Array).u32(8).kind(Kind::U16);
     check_trivial_type::<[u16; 8]>("[T; N]", &expected, &expected);
 
-    let expected = Expected::new(Kind::Array16b).u16(300).kind(Kind::U64);
+    let expected = Expected::new(Kind::Array).u32(300).kind(Kind::U64);
     check_trivial_type::<[u64; 300]>("[T; N]", &expected, &expected);
 
-    let expected = Expected::new(Kind::Array8b).byte(2).kind(Kind::ArrayU8x8);
+    let expected = Expected::new(Kind::Array)
+        .u32(2)
+        .kind(Kind::Array)
+        .u32(8)
+        .kind(Kind::U8);
     check_trivial_type::<[[u8; 8]; 2]>("[T; N]", &expected, &expected);
 
-    let expected = Expected::new(Kind::Array8b)
-        .byte(3)
+    let expected = Expected::new(Kind::Array)
+        .u32(3)
         .kind(Kind::Unaligned)
         .kind(Kind::U32);
     check_trivial_type::<[Unaligned<u32>; 3]>("[T; N]", &expected, &expected);
 
     let (point, point_compact) = point();
-    let expected = Expected::new(Kind::Array8b).byte(4).nested(&point);
-    let expected_compact = Expected::new(Kind::Array8b).byte(4).nested(&point_compact);
+    let expected = Expected::new(Kind::Array).u32(4).nested(&point);
+    let expected_compact = Expected::new(Kind::Array).u32(4).nested(&point_compact);
     check_trivial_type::<[Point; 4]>("[T; N]", &expected, &expected_compact);
 }
 
@@ -404,7 +397,10 @@ fn unaligned() {
     let expected = Expected::new(Kind::Unaligned).kind(Kind::U64);
     check_trivial_type::<Unaligned<u64>>("Unaligned", &expected, &expected);
 
-    let expected = Expected::new(Kind::Unaligned).kind(Kind::ArrayU8x8);
+    let expected = Expected::new(Kind::Unaligned)
+        .kind(Kind::Array)
+        .u32(8)
+        .kind(Kind::U8);
     check_trivial_type::<Unaligned<[u8; 8]>>("Unaligned", &expected, &expected);
 }
 
@@ -427,79 +423,58 @@ fn fixed_capacity_bytes_and_strings() {
 fn variable_bytes() {
     let name = "VariableBytes";
 
-    // Recommended allocations with a dedicated metadata kind
-    let expected = Expected::new(Kind::VariableBytes0);
+    // The recommended allocation is always encoded in 4 bytes, there are no dedicated kinds for
+    // specific values
+    let expected = Expected::new(Kind::VariableBytes).u32(0);
     check_io_type::<VariableBytes<0>>(name, 0, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes512);
-    check_io_type::<VariableBytes<512>>(name, 512, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes1024);
-    check_io_type::<VariableBytes<1024>>(name, 1024, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes2048);
-    check_io_type::<VariableBytes<2048>>(name, 2048, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes4096);
-    check_io_type::<VariableBytes<4096>>(name, 4096, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes8192);
-    check_io_type::<VariableBytes<8192>>(name, 8192, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes16384);
-    check_io_type::<VariableBytes<16_384>>(name, 16_384, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes32768);
-    check_io_type::<VariableBytes<32_768>>(name, 32_768, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes65536);
-    check_io_type::<VariableBytes<65_536>>(name, 65_536, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes131072);
-    check_io_type::<VariableBytes<131_072>>(name, 131_072, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes262144);
-    check_io_type::<VariableBytes<262_144>>(name, 262_144, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes524288);
-    check_io_type::<VariableBytes<524_288>>(name, 524_288, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes1048576);
-    check_io_type::<VariableBytes<1_048_576>>(name, 1_048_576, 1, &expected, &expected);
-
-    // Other recommended allocations, encoded in 1, 2 or 4 bytes
-    let expected = Expected::new(Kind::VariableBytes8b).byte(1);
+    let expected = Expected::new(Kind::VariableBytes).u32(1);
     check_io_type::<VariableBytes<1>>(name, 1, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes8b).byte(255);
+    let expected = Expected::new(Kind::VariableBytes).u32(255);
     check_io_type::<VariableBytes<255>>(name, 255, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes16b).u16(256);
+    let expected = Expected::new(Kind::VariableBytes).u32(256);
     check_io_type::<VariableBytes<256>>(name, 256, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes16b).u16(2028);
-    check_io_type::<VariableBytes<2028>>(name, 2028, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes16b).u16(65_535);
-    check_io_type::<VariableBytes<65_535>>(name, 65_535, 1, &expected, &expected);
-    let expected = Expected::new(Kind::VariableBytes32b).u32(65_537);
-    check_io_type::<VariableBytes<65_537>>(name, 65_537, 1, &expected, &expected);
+    let expected = Expected::new(Kind::VariableBytes).u32(1024);
+    check_io_type::<VariableBytes<1024>>(name, 1024, 1, &expected, &expected);
+    let expected = Expected::new(Kind::VariableBytes).u32(2048);
+    check_io_type::<VariableBytes<2048>>(name, 2048, 1, &expected, &expected);
+    let expected = Expected::new(Kind::VariableBytes).u32(65_536);
+    check_io_type::<VariableBytes<65_536>>(name, 65_536, 1, &expected, &expected);
+    let expected = Expected::new(Kind::VariableBytes).u32(1_048_576);
+    check_io_type::<VariableBytes<1_048_576>>(name, 1_048_576, 1, &expected, &expected);
 }
 
 #[test]
 fn variable_elements() {
     let name = "VariableElements";
 
-    let expected = Expected::new(Kind::VariableElements0).kind(Kind::U8);
+    // The recommended allocation is always encoded in 4 bytes, there are no dedicated kinds for
+    // specific values
+    let expected = Expected::new(Kind::VariableElements).u32(0).kind(Kind::U8);
     check_io_type::<VariableElements<u8>>(name, 0, 1, &expected, &expected);
 
     // Alignment of elements, regardless of the recommended allocation
-    let expected = Expected::new(Kind::VariableElements0).kind(Kind::U128);
+    let expected = Expected::new(Kind::VariableElements)
+        .u32(0)
+        .kind(Kind::U128);
     check_io_type::<VariableElements<u128>>(name, 0, 16, &expected, &expected);
-    let expected = Expected::new(Kind::VariableElements8b)
-        .byte(1)
+    let expected = Expected::new(Kind::VariableElements)
+        .u32(1)
         .kind(Kind::U128);
     check_io_type::<VariableElements<u128, 1>>(name, 16, 16, &expected, &expected);
 
     let (point, point_compact) = point();
-    let expected = Expected::new(Kind::VariableElements8b)
-        .byte(10)
-        .nested(&point);
-    let expected_compact = Expected::new(Kind::VariableElements8b)
-        .byte(10)
+    let expected = Expected::new(Kind::VariableElements).u32(10).nested(&point);
+    let expected_compact = Expected::new(Kind::VariableElements)
+        .u32(10)
         .nested(&point_compact);
     check_io_type::<VariableElements<Point, 10>>(name, 20, 1, &expected, &expected_compact);
 
-    let expected = Expected::new(Kind::VariableElements16b)
-        .u16(300)
+    let expected = Expected::new(Kind::VariableElements)
+        .u32(300)
         .kind(Kind::U32);
     check_io_type::<VariableElements<u32, 300>>(name, 1200, 4, &expected, &expected);
 
-    let expected = Expected::new(Kind::VariableElements32b)
+    let expected = Expected::new(Kind::VariableElements)
         .u32(70_000)
         .kind(Kind::U16);
     check_io_type::<VariableElements<u16, 70_000>>(name, 140_000, 2, &expected, &expected);
@@ -532,7 +507,7 @@ fn empty_structs() {
     struct EmptyUnit;
 
     // Compact metadata is the same for all empty structs
-    let expected = Expected::new(Kind::Struct0).name("Empty");
+    let expected = Expected::new(Kind::Struct).name("Empty").byte(0);
     let expected_compact = Expected::new(Kind::TupleStruct).name("").byte(0);
     check_trivial_type::<Empty>("Empty", &expected, &expected_compact);
 
@@ -560,19 +535,18 @@ fn structs_with_named_fields() {
     named_struct!(Named11, [a, b, c, d, e, f, g, h, i, j, k]);
     named_struct!(Named12, [a, b, c, d, e, f, g, h, i, j, k, l]);
 
-    check_named_struct::<Named1>("Named1", 1, Kind::Struct1, Kind::TupleStruct1);
-    check_named_struct::<Named2>("Named2", 2, Kind::Struct2, Kind::TupleStruct2);
-    check_named_struct::<Named3>("Named3", 3, Kind::Struct3, Kind::TupleStruct3);
-    check_named_struct::<Named4>("Named4", 4, Kind::Struct4, Kind::TupleStruct4);
-    check_named_struct::<Named5>("Named5", 5, Kind::Struct5, Kind::TupleStruct5);
-    check_named_struct::<Named6>("Named6", 6, Kind::Struct6, Kind::TupleStruct6);
-    check_named_struct::<Named7>("Named7", 7, Kind::Struct7, Kind::TupleStruct7);
-    check_named_struct::<Named8>("Named8", 8, Kind::Struct8, Kind::TupleStruct8);
-    check_named_struct::<Named9>("Named9", 9, Kind::Struct9, Kind::TupleStruct9);
-    check_named_struct::<Named10>("Named10", 10, Kind::Struct10, Kind::TupleStruct10);
-    // More than 10 fields need an explicit number of fields
-    check_named_struct::<Named11>("Named11", 11, Kind::Struct, Kind::TupleStruct);
-    check_named_struct::<Named12>("Named12", 12, Kind::Struct, Kind::TupleStruct);
+    check_named_struct::<Named1>("Named1", 1);
+    check_named_struct::<Named2>("Named2", 2);
+    check_named_struct::<Named3>("Named3", 3);
+    check_named_struct::<Named4>("Named4", 4);
+    check_named_struct::<Named5>("Named5", 5);
+    check_named_struct::<Named6>("Named6", 6);
+    check_named_struct::<Named7>("Named7", 7);
+    check_named_struct::<Named8>("Named8", 8);
+    check_named_struct::<Named9>("Named9", 9);
+    check_named_struct::<Named10>("Named10", 10);
+    check_named_struct::<Named11>("Named11", 11);
+    check_named_struct::<Named12>("Named12", 12);
 }
 
 #[test]
@@ -590,19 +564,18 @@ fn tuple_structs() {
     tuple_struct!(Tuple11, [a, b, c, d, e, f, g, h, i, j, k]);
     tuple_struct!(Tuple12, [a, b, c, d, e, f, g, h, i, j, k, l]);
 
-    check_tuple_struct::<Tuple1>("Tuple1", 1, Kind::TupleStruct1);
-    check_tuple_struct::<Tuple2>("Tuple2", 2, Kind::TupleStruct2);
-    check_tuple_struct::<Tuple3>("Tuple3", 3, Kind::TupleStruct3);
-    check_tuple_struct::<Tuple4>("Tuple4", 4, Kind::TupleStruct4);
-    check_tuple_struct::<Tuple5>("Tuple5", 5, Kind::TupleStruct5);
-    check_tuple_struct::<Tuple6>("Tuple6", 6, Kind::TupleStruct6);
-    check_tuple_struct::<Tuple7>("Tuple7", 7, Kind::TupleStruct7);
-    check_tuple_struct::<Tuple8>("Tuple8", 8, Kind::TupleStruct8);
-    check_tuple_struct::<Tuple9>("Tuple9", 9, Kind::TupleStruct9);
-    check_tuple_struct::<Tuple10>("Tuple10", 10, Kind::TupleStruct10);
-    // More than 10 fields need an explicit number of fields
-    check_tuple_struct::<Tuple11>("Tuple11", 11, Kind::TupleStruct);
-    check_tuple_struct::<Tuple12>("Tuple12", 12, Kind::TupleStruct);
+    check_tuple_struct::<Tuple1>("Tuple1", 1);
+    check_tuple_struct::<Tuple2>("Tuple2", 2);
+    check_tuple_struct::<Tuple3>("Tuple3", 3);
+    check_tuple_struct::<Tuple4>("Tuple4", 4);
+    check_tuple_struct::<Tuple5>("Tuple5", 5);
+    check_tuple_struct::<Tuple6>("Tuple6", 6);
+    check_tuple_struct::<Tuple7>("Tuple7", 7);
+    check_tuple_struct::<Tuple8>("Tuple8", 8);
+    check_tuple_struct::<Tuple9>("Tuple9", 9);
+    check_tuple_struct::<Tuple10>("Tuple10", 10);
+    check_tuple_struct::<Tuple11>("Tuple11", 11);
+    check_tuple_struct::<Tuple12>("Tuple12", 12);
 }
 
 #[test]
@@ -814,8 +787,8 @@ fn structs_with_different_field_types() {
         .name("l")
         .kind(Kind::Unit)
         .name("padding")
-        .kind(Kind::Array8b)
-        .byte(1)
+        .kind(Kind::Array)
+        .u32(1)
         .kind(Kind::U8);
     let expected_compact = Expected::new(Kind::TupleStruct)
         .name("")
@@ -832,33 +805,39 @@ fn structs_with_different_field_types() {
         .kind(Kind::I8)
         .kind(Kind::Bool)
         .kind(Kind::Unit)
-        .kind(Kind::Array8b)
-        .byte(1)
+        .kind(Kind::Array)
+        .u32(1)
         .kind(Kind::U8);
     check_trivial_type::<Primitives>("Primitives", &expected, &expected_compact);
 
-    let expected = Expected::new(Kind::TupleStruct3)
+    let expected = Expected::new(Kind::TupleStruct)
         .name("Mixed")
+        .byte(3)
         .kind(Kind::U64)
         .kind(Kind::Unaligned)
         .kind(Kind::U32)
-        .kind(Kind::Array8b)
-        .byte(4)
+        .kind(Kind::Array)
+        .u32(4)
         .kind(Kind::U8);
-    let expected_compact = Expected::new(Kind::TupleStruct3)
+    let expected_compact = Expected::new(Kind::TupleStruct)
         .name("")
+        .byte(3)
         .kind(Kind::U64)
         .kind(Kind::Unaligned)
         .kind(Kind::U32)
-        .kind(Kind::Array8b)
-        .byte(4)
+        .kind(Kind::Array)
+        .u32(4)
         .kind(Kind::U8);
     check_trivial_type::<Mixed>("Mixed", &expected, &expected_compact);
 
-    let expected = Expected::new(Kind::TupleStruct1)
+    let expected = Expected::new(Kind::TupleStruct)
         .name("Transparent")
+        .byte(1)
         .kind(Kind::U32);
-    let expected_compact = Expected::new(Kind::TupleStruct1).name("").kind(Kind::U32);
+    let expected_compact = Expected::new(Kind::TupleStruct)
+        .name("")
+        .byte(1)
+        .kind(Kind::U32);
     check_trivial_type::<Transparent>("Transparent", &expected, &expected_compact);
 }
 
@@ -882,21 +861,20 @@ fn fieldless_enums() {
         [A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q]
     );
 
-    check_fieldless_enum::<NoFields1>("NoFields1", 1, Kind::EnumNoFields1);
-    check_fieldless_enum::<NoFields2>("NoFields2", 2, Kind::EnumNoFields2);
-    check_fieldless_enum::<NoFields3>("NoFields3", 3, Kind::EnumNoFields3);
-    check_fieldless_enum::<NoFields4>("NoFields4", 4, Kind::EnumNoFields4);
-    check_fieldless_enum::<NoFields5>("NoFields5", 5, Kind::EnumNoFields5);
-    check_fieldless_enum::<NoFields6>("NoFields6", 6, Kind::EnumNoFields6);
-    check_fieldless_enum::<NoFields7>("NoFields7", 7, Kind::EnumNoFields7);
-    check_fieldless_enum::<NoFields8>("NoFields8", 8, Kind::EnumNoFields8);
-    check_fieldless_enum::<NoFields9>("NoFields9", 9, Kind::EnumNoFields9);
-    check_fieldless_enum::<NoFields10>("NoFields10", 10, Kind::EnumNoFields10);
-    // More than 10 variants need an explicit number of variants
-    check_fieldless_enum::<NoFields11>("NoFields11", 11, Kind::EnumNoFields);
-    check_fieldless_enum::<NoFields12>("NoFields12", 12, Kind::EnumNoFields);
-    check_fieldless_enum::<NoFields16>("NoFields16", 16, Kind::EnumNoFields);
-    check_fieldless_enum::<NoFields17>("NoFields17", 17, Kind::EnumNoFields);
+    check_fieldless_enum::<NoFields1>("NoFields1", 1);
+    check_fieldless_enum::<NoFields2>("NoFields2", 2);
+    check_fieldless_enum::<NoFields3>("NoFields3", 3);
+    check_fieldless_enum::<NoFields4>("NoFields4", 4);
+    check_fieldless_enum::<NoFields5>("NoFields5", 5);
+    check_fieldless_enum::<NoFields6>("NoFields6", 6);
+    check_fieldless_enum::<NoFields7>("NoFields7", 7);
+    check_fieldless_enum::<NoFields8>("NoFields8", 8);
+    check_fieldless_enum::<NoFields9>("NoFields9", 9);
+    check_fieldless_enum::<NoFields10>("NoFields10", 10);
+    check_fieldless_enum::<NoFields11>("NoFields11", 11);
+    check_fieldless_enum::<NoFields12>("NoFields12", 12);
+    check_fieldless_enum::<NoFields16>("NoFields16", 16);
+    check_fieldless_enum::<NoFields17>("NoFields17", 17);
 }
 
 #[test]
@@ -916,21 +894,20 @@ fn enums_with_fields() {
     data_enum!(Data16, [A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P]);
     data_enum!(Data17, [A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q]);
 
-    check_data_enum::<Data1>("Data1", 1, Kind::Enum1);
-    check_data_enum::<Data2>("Data2", 2, Kind::Enum2);
-    check_data_enum::<Data3>("Data3", 3, Kind::Enum3);
-    check_data_enum::<Data4>("Data4", 4, Kind::Enum4);
-    check_data_enum::<Data5>("Data5", 5, Kind::Enum5);
-    check_data_enum::<Data6>("Data6", 6, Kind::Enum6);
-    check_data_enum::<Data7>("Data7", 7, Kind::Enum7);
-    check_data_enum::<Data8>("Data8", 8, Kind::Enum8);
-    check_data_enum::<Data9>("Data9", 9, Kind::Enum9);
-    check_data_enum::<Data10>("Data10", 10, Kind::Enum10);
-    // More than 10 variants need an explicit number of variants
-    check_data_enum::<Data11>("Data11", 11, Kind::Enum);
-    check_data_enum::<Data12>("Data12", 12, Kind::Enum);
-    check_data_enum::<Data16>("Data16", 16, Kind::Enum);
-    check_data_enum::<Data17>("Data17", 17, Kind::Enum);
+    check_data_enum::<Data1>("Data1", 1);
+    check_data_enum::<Data2>("Data2", 2);
+    check_data_enum::<Data3>("Data3", 3);
+    check_data_enum::<Data4>("Data4", 4);
+    check_data_enum::<Data5>("Data5", 5);
+    check_data_enum::<Data6>("Data6", 6);
+    check_data_enum::<Data7>("Data7", 7);
+    check_data_enum::<Data8>("Data8", 8);
+    check_data_enum::<Data9>("Data9", 9);
+    check_data_enum::<Data10>("Data10", 10);
+    check_data_enum::<Data11>("Data11", 11);
+    check_data_enum::<Data12>("Data12", 12);
+    check_data_enum::<Data16>("Data16", 16);
+    check_data_enum::<Data17>("Data17", 17);
 }
 
 #[test]
@@ -962,8 +939,9 @@ fn enums_with_different_variants() {
     }
 
     let (point, point_compact) = point();
-    let expected = Expected::new(Kind::Enum3)
+    let expected = Expected::new(Kind::Enum)
         .name("Shape")
+        .byte(3)
         .name("Dot")
         .byte(1)
         .name("point")
@@ -977,11 +955,12 @@ fn enums_with_different_variants() {
         .name("Wide")
         .byte(1)
         .name("bytes")
-        .kind(Kind::Array8b)
-        .byte(2)
+        .kind(Kind::Array)
+        .u32(2)
         .kind(Kind::U8);
-    let expected_compact = Expected::new(Kind::Enum3)
+    let expected_compact = Expected::new(Kind::Enum)
         .name("")
+        .byte(3)
         .name("")
         .byte(1)
         .nested(&point_compact)
@@ -991,21 +970,23 @@ fn enums_with_different_variants() {
         .kind(Kind::U8)
         .name("")
         .byte(1)
-        .kind(Kind::Array8b)
-        .byte(2)
+        .kind(Kind::Array)
+        .u32(2)
         .kind(Kind::U8);
     check_trivial_type::<Shape>("Shape", &expected, &expected_compact);
 
-    let expected = Expected::new(Kind::Enum2)
+    let expected = Expected::new(Kind::Enum)
         .name("MixedDataFirst")
+        .byte(2)
         .name("Full")
         .byte(1)
         .name("value")
         .kind(Kind::Unit)
         .name("Empty")
         .byte(0);
-    let expected_compact = Expected::new(Kind::Enum2)
+    let expected_compact = Expected::new(Kind::Enum)
         .name("")
+        .byte(2)
         .name("")
         .byte(1)
         .kind(Kind::Unit)
@@ -1013,8 +994,9 @@ fn enums_with_different_variants() {
         .byte(0);
     check_trivial_type::<MixedDataFirst>("MixedDataFirst", &expected, &expected_compact);
 
-    let expected = Expected::new(Kind::Enum4)
+    let expected = Expected::new(Kind::Enum)
         .name("MixedFieldlessFirst")
+        .byte(4)
         .name("Empty")
         .byte(0)
         .name("Full")
@@ -1026,13 +1008,14 @@ fn enums_with_different_variants() {
         .name("AlsoFull")
         .byte(2)
         .name("first")
-        .kind(Kind::Array8b)
-        .byte(0)
+        .kind(Kind::Array)
+        .u32(0)
         .kind(Kind::U8)
         .name("second")
         .kind(Kind::Unit);
-    let expected_compact = Expected::new(Kind::Enum4)
+    let expected_compact = Expected::new(Kind::Enum)
         .name("")
+        .byte(4)
         .name("")
         .byte(0)
         .name("")
@@ -1042,11 +1025,52 @@ fn enums_with_different_variants() {
         .byte(0)
         .name("")
         .byte(2)
-        .kind(Kind::Array8b)
-        .byte(0)
+        .kind(Kind::Array)
+        .u32(0)
         .kind(Kind::U8)
         .kind(Kind::Unit);
     check_trivial_type::<MixedFieldlessFirst>("MixedFieldlessFirst", &expected, &expected_compact);
+}
+
+#[test]
+fn enums_without_fields_have_one_encoding() {
+    fieldless_enum!(Fieldless, [A, B]);
+
+    let (expected, expected_compact) = u8_enum("Fieldless", 2, false);
+    check_trivial_type::<Fieldless>("Fieldless", &expected, &expected_compact);
+
+    // The same enum encoded as `Enum` with zero fields in every variant would decode into the same
+    // details, but compact differently
+    let as_enum = Expected::new(Kind::Enum)
+        .name("Fieldless")
+        .byte(2)
+        .name("A")
+        .byte(0)
+        .name("B")
+        .byte(0);
+    check_rejected(&as_enum.0);
+    check_rejected(&Expected::new(Kind::Array).u32(1).nested(&as_enum).0);
+    check_rejected(
+        &Expected::new(Kind::TupleStruct)
+            .name("Outer")
+            .byte(1)
+            .nested(&as_enum)
+            .0,
+    );
+    check_rejected(
+        &Expected::new(Kind::Enum)
+            .name("Outer")
+            .byte(1)
+            .name("A")
+            .byte(1)
+            .name("inner")
+            .nested(&as_enum)
+            .0,
+    );
+
+    // Enums without variants can't derive `TrivialType`, `#[repr(u8)]` requires variants, but the
+    // same rule applies to them
+    check_rejected(&Expected::new(Kind::Enum).name("Empty").byte(0).0);
 }
 
 #[test]
@@ -1103,10 +1127,10 @@ fn enums_with_explicit_discriminants() {
         B { value: u8 } = 1,
     }
 
-    check_fieldless_enum::<NoFields3>("NoFields3", 3, Kind::EnumNoFields3);
-    check_fieldless_enum::<NoFields12>("NoFields12", 12, Kind::EnumNoFields);
-    check_fieldless_enum::<NoFields4>("NoFields4", 4, Kind::EnumNoFields4);
-    check_data_enum::<Data2>("Data2", 2, Kind::Enum2);
+    check_fieldless_enum::<NoFields3>("NoFields3", 3);
+    check_fieldless_enum::<NoFields12>("NoFields12", 12);
+    check_fieldless_enum::<NoFields4>("NoFields4", 4);
+    check_data_enum::<Data2>("Data2", 2);
 }
 
 #[test]
@@ -1129,26 +1153,33 @@ fn nested_types() {
     }
 
     let (point, point_compact) = point();
-    let (direction, direction_compact) = u8_enum(Kind::EnumNoFields2, "Direction", 2, false);
-    let (value, value_compact) = u8_enum(Kind::Enum2, "Value", 2, true);
-    let inner = Expected::new(Kind::TupleStruct2)
+    let (direction, direction_compact) = u8_enum("Direction", 2, false);
+    let (value, value_compact) = u8_enum("Value", 2, true);
+    let inner = Expected::new(Kind::TupleStruct)
         .name("Inner")
+        .byte(2)
         .nested(&point)
-        .kind(Kind::ArrayU8x8);
-    let inner_compact = Expected::new(Kind::TupleStruct2)
+        .kind(Kind::Array)
+        .u32(8)
+        .kind(Kind::U8);
+    let inner_compact = Expected::new(Kind::TupleStruct)
         .name("")
+        .byte(2)
         .nested(&point_compact)
-        .kind(Kind::ArrayU8x8);
+        .kind(Kind::Array)
+        .u32(8)
+        .kind(Kind::U8);
     check_trivial_type::<Inner>("Inner", &inner, &inner_compact);
 
-    let expected = Expected::new(Kind::Struct5)
+    let expected = Expected::new(Kind::Struct)
         .name("Outer")
+        .byte(5)
         .name("wide")
         .kind(Kind::Unaligned)
         .kind(Kind::U64)
         .name("points")
-        .kind(Kind::Array8b)
-        .byte(3)
+        .kind(Kind::Array)
+        .u32(3)
         .nested(&point)
         .name("direction")
         .nested(&direction)
@@ -1156,12 +1187,13 @@ fn nested_types() {
         .nested(&value)
         .name("inner")
         .nested(&inner);
-    let expected_compact = Expected::new(Kind::TupleStruct5)
+    let expected_compact = Expected::new(Kind::TupleStruct)
         .name("")
+        .byte(5)
         .kind(Kind::Unaligned)
         .kind(Kind::U64)
-        .kind(Kind::Array8b)
-        .byte(3)
+        .kind(Kind::Array)
+        .u32(3)
         .nested(&point_compact)
         .nested(&direction_compact)
         .nested(&value_compact)

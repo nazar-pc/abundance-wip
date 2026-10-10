@@ -27,53 +27,9 @@ pub struct VariableBytes<const RECOMMENDED_ALLOCATION: u32 = 0> {
 unsafe impl<const RECOMMENDED_ALLOCATION: u32> IoType for VariableBytes<RECOMMENDED_ALLOCATION> {
     const METADATA: &[u8] = {
         const fn metadata(recommended_allocation: u32) -> ([u8; MAX_METADATA_CAPACITY], usize) {
-            if recommended_allocation == 0 {
-                return concat_metadata_sources(&[&[IoTypeMetadataKind::VariableBytes0 as u8]]);
-            } else if recommended_allocation == 512 {
-                return concat_metadata_sources(&[&[IoTypeMetadataKind::VariableBytes512 as u8]]);
-            } else if recommended_allocation == 1024 {
-                return concat_metadata_sources(&[&[IoTypeMetadataKind::VariableBytes1024 as u8]]);
-            } else if recommended_allocation == 2048 {
-                return concat_metadata_sources(&[&[IoTypeMetadataKind::VariableBytes2048 as u8]]);
-            } else if recommended_allocation == 4096 {
-                return concat_metadata_sources(&[&[IoTypeMetadataKind::VariableBytes4096 as u8]]);
-            } else if recommended_allocation == 8192 {
-                return concat_metadata_sources(&[&[IoTypeMetadataKind::VariableBytes8192 as u8]]);
-            } else if recommended_allocation == 16384 {
-                return concat_metadata_sources(&[&[IoTypeMetadataKind::VariableBytes16384 as u8]]);
-            } else if recommended_allocation == 32768 {
-                return concat_metadata_sources(&[&[IoTypeMetadataKind::VariableBytes32768 as u8]]);
-            } else if recommended_allocation == 65536 {
-                return concat_metadata_sources(&[&[IoTypeMetadataKind::VariableBytes65536 as u8]]);
-            } else if recommended_allocation == 131_072 {
-                return concat_metadata_sources(&[
-                    &[IoTypeMetadataKind::VariableBytes131072 as u8],
-                ]);
-            } else if recommended_allocation == 262_144 {
-                return concat_metadata_sources(&[
-                    &[IoTypeMetadataKind::VariableBytes262144 as u8],
-                ]);
-            } else if recommended_allocation == 524_288 {
-                return concat_metadata_sources(&[
-                    &[IoTypeMetadataKind::VariableBytes524288 as u8],
-                ]);
-            } else if recommended_allocation == 1_048_576 {
-                return concat_metadata_sources(&[&[
-                    IoTypeMetadataKind::VariableBytes1048576 as u8
-                ]]);
-            }
-
-            let (io_type, size_bytes) = if recommended_allocation < 2u32.pow(8) {
-                (IoTypeMetadataKind::VariableBytes8b, 1)
-            } else if recommended_allocation < 2u32.pow(16) {
-                (IoTypeMetadataKind::VariableBytes16b, 2)
-            } else {
-                (IoTypeMetadataKind::VariableBytes32b, 4)
-            };
-
             concat_metadata_sources(&[
-                &[io_type as u8],
-                recommended_allocation.to_le_bytes().split_at(size_bytes).0,
+                &[IoTypeMetadataKind::VariableBytes as u8],
+                &recommended_allocation.to_le_bytes(),
             ])
         }
 
