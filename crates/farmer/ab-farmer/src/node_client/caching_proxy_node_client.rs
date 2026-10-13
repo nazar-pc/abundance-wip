@@ -99,7 +99,13 @@ impl SuperSegmentHeaders {
             .then_some(super_segment_header.root)
     }
 
-    /// Get uncached headers from the node if we're not rate-limited.
+    /// Whether the last sync was too recent to sync again
+    fn is_sync_rate_limited(&self) -> bool {
+        self.last_synced
+            .is_some_and(|last_synced| last_synced.elapsed() < SEGMENT_HEADERS_SYNC_INTERVAL)
+    }
+
+    /// Get uncached headers from the node.
     /// This only requires a read lock.
     ///
     /// Returns any extra super segment headers if the download succeeds, or an error if it fails.
@@ -112,13 +118,6 @@ impl SuperSegmentHeaders {
     where
         NC: NodeClient,
     {
-        // Skip the sync if we're still within the sync rate limit.
-        if let Some(last_synced) = &self.last_synced
-            && last_synced.elapsed() < SEGMENT_HEADERS_SYNC_INTERVAL
-        {
-            return Ok(Vec::new());
-        }
-
         let mut extra_super_segment_headers = Vec::new();
         let mut super_segment_index_offset =
             SuperSegmentIndex::from(self.super_segment_headers.len() as u64);
@@ -225,6 +224,7 @@ where
         let (new_super_segment_headers_sender, new_super_segment_headers_receiver) =
             watch::channel(None::<SuperSegmentHeader>);
         let super_segment_headers_maintenance_fut = {
+            let client = client.clone();
             let super_segment_headers = StdArc::clone(&super_segment_headers);
 
             async move {
@@ -239,6 +239,38 @@ where
                         continue;
                     }
                     last_super_segment_index.replace(super_segment_index);
+
+                    // Notifications are not guaranteed to be delivered (for example, they are
+                    // skipped when not processed in time or lost while the source is restarting),
+                    // download missing headers to not get stuck with a gap in the cache forever
+                    let has_gap = (super_segment_headers
+                        .read()
+                        .await
+                        .super_segment_headers
+                        .len() as u64)
+                        < u64::from(super_segment_index.as_inner());
+                    if has_gap {
+                        let result = super_segment_headers
+                            .read()
+                            .await
+                            .request_uncached_headers(&client)
+                            .await;
+                        match result {
+                            Ok(extra_super_segment_headers) => {
+                                super_segment_headers
+                                    .write()
+                                    .await
+                                    .write_cache(extra_super_segment_headers);
+                            }
+                            Err(error) => {
+                                warn!(
+                                    %error,
+                                    %super_segment_index,
+                                    "Failed to download missing super segment headers"
+                                );
+                            }
+                        }
+                    }
 
                     super_segment_headers.write().await.push(new_segment_header);
 
@@ -382,14 +414,18 @@ where
             return Ok(retrieved_super_segment_headers);
         }
 
+        // Skip the sync if we're still within the sync rate limit
+        if super_segment_headers.is_sync_rate_limited() {
+            return Ok(retrieved_super_segment_headers);
+        }
+
         // Try to sync the cache with the node
         let extra_super_segment_headers = super_segment_headers
             .request_uncached_headers(&self.inner)
             .await?;
 
         if extra_super_segment_headers.is_empty() {
-            // No extra super segment headers on the node, or we are rate-limited, so just return
-            // what is in the cache
+            // No extra super segment headers on the node, so just return what is in the cache
             return Ok(retrieved_super_segment_headers);
         }
 
