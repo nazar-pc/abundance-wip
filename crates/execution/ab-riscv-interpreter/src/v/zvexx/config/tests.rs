@@ -1,7 +1,7 @@
 use crate::rv64::test_utils::{TestHart, execute, initialize_state};
 use crate::v::vector_config::VectorConfig;
 use crate::v::vector_registers::VectorRegistersExt;
-use crate::{Csrs, ExecutableInstructionCsr, RegisterFile};
+use crate::{CsrError, Csrs, ExecutableInstructionCsr, RegisterFile};
 use ab_riscv_primitives::prelude::*;
 
 /// Encode a vtype immediate from SEW, LMUL, vta, vma fields
@@ -888,6 +888,113 @@ fn prepare_csr_write_rejects_read_only_vlenb() {
 }
 
 #[test]
+fn prepare_csr_read_fails_when_vector_disabled() {
+    let mut state = initialize_state::<ZveXxConfigInstruction<_>, _>([]);
+    state.env.init_vector_csrs();
+    state.env.set_vector_allowed(false);
+
+    for csr in [
+        VectorCsr::Vstart,
+        VectorCsr::Vxsat,
+        VectorCsr::Vxrm,
+        VectorCsr::Vcsr,
+        VectorCsr::Vl,
+        VectorCsr::Vtype,
+        VectorCsr::Vlenb,
+    ] {
+        let mut output = 0u64;
+        let result = <ZveXxConfigInstruction<TestHart>>::prepare_csr_read(
+            &state.env,
+            csr.to_csr_index(),
+            false,
+            42,
+            &mut output,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(CsrError::IllegalRead { csr_index }) if csr_index == csr.to_csr_index()
+            ),
+            "{csr:?}"
+        );
+    }
+}
+
+#[test]
+fn prepare_csr_write_fails_when_vector_disabled() {
+    let mut state = initialize_state::<ZveXxConfigInstruction<_>, _>([]);
+    state.env.init_vector_csrs();
+    state.env.set_vector_allowed(false);
+    let dirty_before = state.env.vs_dirty_count();
+
+    for csr in [
+        VectorCsr::Vstart,
+        VectorCsr::Vxsat,
+        VectorCsr::Vxrm,
+        VectorCsr::Vcsr,
+    ] {
+        let mut output = 0u64;
+        let result = <ZveXxConfigInstruction<TestHart>>::prepare_csr_write(
+            &mut state.env,
+            csr.to_csr_index(),
+            1,
+            &mut output,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(CsrError::IllegalWrite { csr_index }) if csr_index == csr.to_csr_index()
+            ),
+            "{csr:?}"
+        );
+    }
+    assert_eq!(state.env.vs_dirty_count(), dirty_before);
+}
+
+#[test]
+fn prepare_csr_write_marks_dirty() {
+    let mut state = initialize_state::<ZveXxConfigInstruction<_>, _>([]);
+    state.env.init_vector_csrs();
+
+    for csr in [
+        VectorCsr::Vstart,
+        VectorCsr::Vxsat,
+        VectorCsr::Vxrm,
+        VectorCsr::Vcsr,
+    ] {
+        let dirty_before = state.env.vs_dirty_count();
+        let mut output = 0u64;
+        let result = <ZveXxConfigInstruction<TestHart>>::prepare_csr_write(
+            &mut state.env,
+            csr.to_csr_index(),
+            0,
+            &mut output,
+        );
+        assert!(result.unwrap(), "{csr:?}");
+        assert_eq!(state.env.vs_dirty_count(), dirty_before + 1, "{csr:?}");
+    }
+}
+
+#[test]
+fn prepare_csr_write_read_only_does_not_mark_dirty() {
+    let mut state = initialize_state::<ZveXxConfigInstruction<_>, _>([]);
+    state.env.init_vector_csrs();
+    let dirty_before = state.env.vs_dirty_count();
+
+    for csr in [VectorCsr::Vl, VectorCsr::Vtype, VectorCsr::Vlenb] {
+        let mut output = 0u64;
+        let result = <ZveXxConfigInstruction<TestHart>>::prepare_csr_write(
+            &mut state.env,
+            csr.to_csr_index(),
+            0,
+            &mut output,
+        );
+        result.unwrap_err();
+    }
+    assert_eq!(state.env.vs_dirty_count(), dirty_before);
+}
+
+#[test]
 fn prepare_csr_write_vxsat_masks_to_1_bit() {
     let mut output = 0u64;
     let mut state = initialize_state::<ZveXxConfigInstruction<_>, _>([]);
@@ -936,19 +1043,46 @@ fn prepare_csr_write_vcsr_masks_to_3_bits() {
 }
 
 #[test]
-fn prepare_csr_write_vstart_passes_full_value() {
+fn prepare_csr_write_vstart_passes_largest_element_index() {
     let mut output = 0u64;
     let mut state = initialize_state::<ZveXxConfigInstruction<_>, _>([]);
     state.env.init_vector_csrs();
+    let max_index = u64::from(u32::from(TestHart::VECTOR_LENGTHS.vlen) - 1);
 
     let result = <ZveXxConfigInstruction<TestHart>>::prepare_csr_write(
         &mut state.env,
         VectorCsr::Vstart.to_csr_index(),
-        0x1234,
+        max_index,
         &mut output,
     );
     assert!(result.unwrap());
-    assert_eq!(output, 0x1234);
+    assert_eq!(output, max_index);
+}
+
+#[test]
+fn prepare_csr_write_vstart_ignores_upper_bits() {
+    let mut output = 0u64;
+    let mut state = initialize_state::<ZveXxConfigInstruction<_>, _>([]);
+    state.env.init_vector_csrs();
+    let max_index = u64::from(u32::from(TestHart::VECTOR_LENGTHS.vlen) - 1);
+
+    let result = <ZveXxConfigInstruction<TestHart>>::prepare_csr_write(
+        &mut state.env,
+        VectorCsr::Vstart.to_csr_index(),
+        u64::MAX,
+        &mut output,
+    );
+    assert!(result.unwrap());
+    assert_eq!(output, max_index);
+
+    let result = <ZveXxConfigInstruction<TestHart>>::prepare_csr_write(
+        &mut state.env,
+        VectorCsr::Vstart.to_csr_index(),
+        (max_index + 1) | 5,
+        &mut output,
+    );
+    assert!(result.unwrap());
+    assert_eq!(output, 5);
 }
 
 #[test]
