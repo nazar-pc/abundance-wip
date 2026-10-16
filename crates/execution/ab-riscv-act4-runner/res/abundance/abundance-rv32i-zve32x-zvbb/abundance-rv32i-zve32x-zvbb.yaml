@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=../../../../external/riscv-unified-db/spec/schemas/config_schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/riscv/riscv-unified-db/main/spec/schemas/config_schema.json
 ---
 $schema: config_schema.json#
 kind: architecture configuration
@@ -27,6 +27,7 @@ params:
   MISA_CSR_IMPLEMENTED: false
   M_MODE_ENDIANNESS: little
   CONFIG_PTR_ADDRESS: 0
+  NON_STANDARD_EXTENSION_IMPLEMENTED: false
 
   # --- Vendor/arch/imp IDs ---
   MARCHID_IMPLEMENTED: false
@@ -59,6 +60,16 @@ params:
   TRAP_ON_UNIMPLEMENTED_CSR: true
   TRAP_ON_UNIMPLEMENTED_INSTRUCTION: true
   TRAP_ON_RESERVED_INSTRUCTION: true
+
+  # --- Interrupts ---
+  # No interrupt controller, CLINT or timer, so interrupts are never raised
+  MEI_INTR_IMPL: false
+  MSI_INTR_IMPL: false
+  MTI_INTR_IMPL: false
+  # WFI is a NOP
+  WFI_FINITE: true
+  # No U-mode
+  WFI_U_MODE: false
 
   # --- mcountinhibit ---
   MCOUNTINHIBIT_IMPLEMENTED: false

@@ -427,16 +427,19 @@ where
 /// `set_pc[_relative]()` rejects a misaligned target with `ExecutionError::UnalignedInstruction`
 /// instead of moving the program counter there. That is an instruction-address-misaligned
 /// exception on real hardware, not a hard interpreter error - dispatch through the trap handler
-/// exactly like the illegal-instruction case in [`run_test()`]. Per
-/// `REPORT_VA_IN_MTVAL_ON_INSTRUCTION_MISALIGNED` (`false`) in the DUT config, `mtval` is left at
-/// zero rather than the address. The recursive `set_pc()` call for the trap handler's own entry
-/// point can't itself be misaligned (`mtvec` is masked to `MTVEC_BASE_ALIGNMENT_DIRECT` on every
-/// write), so it's fine to propagate its result with a bare `?`.
+/// exactly like the illegal-instruction case in [`run_test()`]. `epc` is the address of the
+/// instruction that changed the program counter, which is what `mepc` must point to, rather than
+/// the misaligned target. Per `REPORT_VA_IN_MTVAL_ON_INSTRUCTION_MISALIGNED` (`false`) in the DUT
+/// config, `mtval` is left at zero rather than the target address. The recursive `set_pc()` call
+/// for the trap handler's own entry point can't itself be misaligned (`mtvec` is masked to
+/// `MTVEC_BASE_ALIGNMENT_DIRECT` on every write), so it's fine to propagate its result with a bare
+/// `?`.
 fn resolve_pc_result<I>(
     result: Result<ControlFlow<()>, ExecutionError<RegisterType<I>>>,
     env: &mut TestEnv<I::Hart>,
     memory: &BasicMemory<RAM_BASE, RAM_SIZE>,
     instruction_fetcher: &mut BasicInstructionFetcher<I>,
+    epc: RegisterType<I>,
 ) -> Result<ControlFlow<()>, TestError<RegisterType<I>>>
 where
     I: Instruction<Hart: VectorHartConfig<Reg: BasicRegister<Type: BasicInt>>>,
@@ -448,7 +451,7 @@ where
             let trap_pc = env
                 .take_trap(
                     MCauseException::InstructionAddressMisaligned,
-                    address,
+                    epc,
                     RegisterType::<I>::default(),
                 )
                 .ok_or(ExecutionError::UnalignedInstruction {
@@ -506,6 +509,7 @@ where
         if check_tohost(&state.memory, elf.tohost_addr, &mut pending_tohost)? {
             break;
         }
+        state.env.finish_step();
         if ab_trace {
             let pc =
                 ProgramCounter::<RegisterType<I>, Box<BasicMemory<RAM_BASE, RAM_SIZE>>>::get_pc(
@@ -514,7 +518,10 @@ where
             eprintln!("pc={:#x}", pc.as_u64());
         }
         let instruction = match state.instruction_fetcher.fetch_instruction(&state.memory) {
-            FetchInstructionResult::Instruction(instruction) => instruction,
+            FetchInstructionResult::Instruction(instruction) => {
+                state.env.begin_step();
+                instruction
+            }
             FetchInstructionResult::Break => {
                 break;
             }
@@ -536,6 +543,7 @@ where
                         &mut state.env,
                         &state.memory,
                         &mut state.instruction_fetcher,
+                        address,
                     )? {
                         ControlFlow::Continue(()) => {
                             continue;
@@ -562,6 +570,7 @@ where
                     &mut state.env,
                     &state.memory,
                     &mut state.instruction_fetcher,
+                    address,
                 )? {
                     ControlFlow::Continue(()) => {
                         continue;
@@ -590,6 +599,7 @@ where
                     &mut state.env,
                     &state.memory,
                     &mut state.instruction_fetcher,
+                    epc,
                 )? {
                     ControlFlow::Continue(()) => {
                         continue;
@@ -636,6 +646,11 @@ where
                 }
             }
             ExecutionResult::Branch { offset } => {
+                let epc =
+                    ProgramCounter::<RegisterType<I>, Box<BasicMemory<RAM_BASE, RAM_SIZE>>>::old_pc(
+                        &state.instruction_fetcher,
+                        instruction.size(),
+                    );
                 match resolve_pc_result::<I>(
                     state.instruction_fetcher.set_pc_relative(
                         &state.memory,
@@ -645,6 +660,7 @@ where
                     &mut state.env,
                     &state.memory,
                     &mut state.instruction_fetcher,
+                    epc,
                 )? {
                     ControlFlow::Continue(()) => {}
                     ControlFlow::Break(()) => {
@@ -653,11 +669,17 @@ where
                 }
             }
             ExecutionResult::Jump { target } => {
+                let epc =
+                    ProgramCounter::<RegisterType<I>, Box<BasicMemory<RAM_BASE, RAM_SIZE>>>::old_pc(
+                        &state.instruction_fetcher,
+                        instruction.size(),
+                    );
                 match resolve_pc_result::<I>(
                     state.instruction_fetcher.set_pc(&state.memory, target),
                     &mut state.env,
                     &state.memory,
                     &mut state.instruction_fetcher,
+                    epc,
                 )? {
                     ControlFlow::Continue(()) => {}
                     ControlFlow::Break(()) => {
@@ -715,6 +737,7 @@ where
                     &mut state.env,
                     &state.memory,
                     &mut state.instruction_fetcher,
+                    address,
                 )? {
                     ControlFlow::Continue(()) => {}
                     ControlFlow::Break(()) => {
@@ -772,6 +795,7 @@ where
                     &mut state.env,
                     &state.memory,
                     &mut state.instruction_fetcher,
+                    epc,
                 )? {
                     ControlFlow::Continue(()) => {}
                     ControlFlow::Break(()) => {

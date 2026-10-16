@@ -13,7 +13,7 @@
 #   "Sm" required-extension (Sm, SsstrictSm, ExceptionsSm, ExceptionsZaamo, ExceptionsZalrsc,
 #   ExceptionsZc, InterruptsSm, ZawrsSm, ...) - `select_tests` only exempts extensions from
 #   this flag when they don't require Sm/S/U at all (e.g. Zkr), which isn't the case here.
-#   This core has no S/U mode, no PMP, and no CLINT-backed timer interrupts, so the rest of
+#   This core has no S/U mode, no PMP, and no interrupts, so the rest of
 #   the priv/ suite (anything requiring S or U) is still excluded automatically: `abundance-
 #   rv32i-max.yaml` doesn't declare S/U/Sscofpmf/Sstc/etc, so `select_tests`'s implemented-
 #   extensions subset check filters those tests out regardless of this flag.
@@ -23,16 +23,14 @@
 # and https://github.com/riscv/riscv-arch-test/issues/1633. SsstrictS/SsstrictU are excluded
 # the same way as the rest of the S/U-only suite, since this core has no S/U mode.
 #
-# InterruptsSm and ZawrsSm are excluded via EXCLUDE_EXTENSIONS (see README.md / rust.yml) rather
-# than by this flag: both pull in testgen/asm/interrupts.py helpers that arm a CLINT-mapped
-# mtimecmp/msip register to make an interrupt fire (InterruptsSm directly; ZawrsSm to test
-# wrs.sto's timeout/resume-on-pending-interrupt bins), which this core doesn't implement, so
-# their self-checking handler faults trying to write MMIO that isn't backed by anything. The
-# remaining Sm-only suites (Sm, ExceptionsSm, ExceptionsZaamo, ExceptionsZalrsc, ExceptionsZc,
-# SmV, SmVF, SsstrictSm) don't touch that helper module.
-# TODO: revisit once/if the interpreter grows a CLINT-style mtimecmp/msip device (even a fake one
-#   backed by plain memory, matching how rvmodel_macros.h already stubs RVMODEL_SET_MSW_INT etc.
-#   as no-ops) - that would let InterruptsSm and ZawrsSm's timer-interrupt bins run too.
+# MEI_INTR_IMPL, MSI_INTR_IMPL and MTI_INTR_IMPL are all false (see the UDB config), so
+# InterruptsSm only exercises interrupt-related bins that don't need an interrupt to actually fire,
+# it skips the ones that would need a CLINT-mapped mtimecmp/msip register. ZawrsSm is excluded via
+# EXCLUDE_EXTENSIONS (see README.md / rust.yml) for now: its cp_wrs_resume and cp_wrs_no_mie
+# coverpoints aren't gated on these parameters yet, so they either wait forever for a timer
+# interrupt or abort the test.
+# TODO: revisit once/if the interpreter grows a CLINT-style mtimecmp/msip device - that would let
+#   InterruptsSm and ZawrsSm's interrupt bins run too.
 
 name: abundance-rv32i-max
 compiler_exe: riscv64-unknown-elf-gcc
