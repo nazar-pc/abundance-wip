@@ -91,6 +91,15 @@ impl TransactionPayloadBuilder {
     /// `slot_output_index` and `input_output_index` are used for referencing earlier outputs as
     /// slots or inputs of this method, its values are optional, see [`TransactionInput`] for more
     /// details.
+    ///
+    /// Outputs are given to the method empty, so a method with an `#[output]` of a
+    /// [`TrivialType`], whose size must be the size of the type, returns
+    /// [`ContractError::BadInput`] when the transaction is executed. The same happens to an
+    /// `#[input]` of a [`TrivialType`] that refers to the return value of an earlier method
+    /// through `input_output_index`: return values have no size in `ExternalArgs`, so the size
+    /// the input is given stays `0`.
+    ///
+    /// [`ContractError::BadInput`]: ab_contracts_common::ContractError::BadInput
     #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     pub fn with_method_call<Args>(
         &mut self,

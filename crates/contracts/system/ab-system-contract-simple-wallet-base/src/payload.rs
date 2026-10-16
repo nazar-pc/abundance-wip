@@ -551,6 +551,12 @@ impl<'tmp, 'decoder, const VERIFY: bool> TransactionPayloadDecoderInternal<'tmp,
                         external_args_cursor,
                         FfiDataSizeCapacityRw {
                             data_ptr: data.as_ptr(),
+                            // TODO: Methods reject empty outputs of `TrivialType` types with
+                            //  `ContractError::BadInput`, since their size must be the size of the
+                            //  type, the payload needs to describe initial contents of outputs.
+                            //  Return values are written here too and their size stays `0`, since
+                            //  `ExternalArgs` have none for them, so inputs that refer to them are
+                            //  rejected the same way, the payload needs to describe their sizes.
                             size: 0,
                             capacity: recommended_capacity,
                         },
