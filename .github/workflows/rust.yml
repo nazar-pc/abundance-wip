@@ -889,7 +889,8 @@ jobs:
 
   act4:
     env:
-      ACT4_RELEASE: sha-6e8a45123f14cebfb3df151a0e7b849b4389b33b # 4.1.0
+      # Commit of https://github.com/riscv/riscv-arch-test, there is no release with Sail 0.15 yet
+      ACT4_COMMIT: d3b1032a5fd553cc51a830bd771e76fc22358a22
 
     strategy:
       matrix:
@@ -913,7 +914,7 @@ jobs:
             | xargs -0 sha256sum \
             | sha256sum \
             | cut -d' ' -f1)
-          COMBINED=$(printf '%s\n%s\n' "${ACT4_RELEASE}" "${RES_HASH}" \
+          COMBINED=$(printf '%s\n%s\n' "${ACT4_COMMIT}" "${RES_HASH}" \
             | sha256sum \
             | cut -d' ' -f1)
           echo "value=${COMBINED}" >> $GITHUB_OUTPUT
@@ -930,6 +931,15 @@ jobs:
       - name: Download toolchain
         run: rustc --version
 
+      - name: Checkout ACT4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # 7.0.1
+        with:
+          repository: riscv/riscv-arch-test
+          ref: ${{ env.ACT4_COMMIT }}
+          path: crates/execution/ab-riscv-act4-runner/riscv-arch-test
+          persist-credentials: 'false'
+        if: steps.restore-cache.outputs.cache-hit != 'true'
+
       - name: Build ELFs
         working-directory: crates/execution/ab-riscv-act4-runner
         env:
@@ -940,29 +950,33 @@ jobs:
             config/abundance/abundance-rv32i-max/test_config.yaml
             config/abundance/abundance-rv64i-max/test_config.yaml
         # TODO: Remove `make vector-tests` once enabled by default
+        # TODO: Remove `apt-get` and `mise deps` once the image ships with UDB gems pre-installed, they
+        #  are currently installed into the wrong directory, so the first run has to install them
+        #  and that requires a C compiler
+        # TODO: Remove `ZawrsSm` exclusion once its tests no longer wait for interrupts that are not
+        #  implemented
         run: |
           mkdir -p work
           docker run --rm \
-            -u $(id -u):$(id -g) \
+            -u 0:0 \
+            -v ./riscv-arch-test:/act4 \
             -v ./work:/act4/work \
             -v ./res/abundance:/act4/config/abundance:ro \
             -e CONFIG_FILES \
-            -e EXCLUDE_EXTENSIONS="InterruptsSm,ZawrsSm" \
+            -e EXCLUDE_EXTENSIONS="ZawrsSm" \
             -e FAST=True \
             -e CLEAN_INTERMEDIATES=True \
-            ghcr.io/riscv/act4:${{ env.ACT4_RELEASE }} \
-            sh -c 'make vector-tests && make'
+            -e HOST_USER="$(id -u):$(id -g)" \
+            ghcr.io/riscv/act4-build:sha-${{ env.ACT4_COMMIT }} \
+            sh -c '
+              apt-get update &&
+              apt-get install -y --no-install-recommends build-essential &&
+              mise deps --skip prek &&
+              make vector-tests &&
+              make &&
+              chown -R "${HOST_USER}" work
+            '
         if: steps.restore-cache.outputs.cache-hit != 'true'
-
-      # TODO: Remove once `ACT4_RELEASE` uses Sail 0.14.1 or newer. Sail 0.13.1 does not treat `vd` of
-      #  `vwmacc*` as a source that must not overlap sources with a different EEW
-      #  (`norm:vreg_source_eew_rsv`), so these tests expect reserved encodings to execute.
-      - name: Skip tests that expect Sail 0.13.1 behavior
-        working-directory: crates/execution/ab-riscv-act4-runner
-        run: |
-          for test in 01 02 04 05 07 08; do
-            find work -path '*/elfs/*' -name "SsstrictSm_VectorInstr-${test}.elf*" -print -delete
-          done
 
       - parallel:
           - name: ACT4 tests RV32I-Zve32x-Zvbb

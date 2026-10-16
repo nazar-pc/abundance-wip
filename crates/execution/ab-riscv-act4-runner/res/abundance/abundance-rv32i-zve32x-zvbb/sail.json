@@ -1,14 +1,25 @@
 {
-  "$schema": "/opt/riscv/share/sail-riscv/sail_riscv_config_schema.json",
+  "$schema": "https://github.com/riscv/sail-riscv/releases/download/0.15/sail_riscv_config_schema.json",
   "base": {
     "xlen": 32,
     "E": false,
-    "writable_misa": false,
     "writable_fiom": false,
     "writable_hpm_counters": {
       "len": 32,
       // No writable HPM counters
       "value": "0x0"
+    },
+    // No HPM counters, so HPM counter and event widths are unobservable
+    "hpmcounter_width_bits": 64,
+    "hpmevent_width_bits": 32,
+    "hpmcounter_increments_in_self_hpmevent_write": false,
+    // MCOUNTINHIBIT_IMPLEMENTED is false
+    "mcountinhibit": {
+      "supported": false,
+      "writable_bits": {
+        "len": 32,
+        "value": "0x0"
+      }
     },
     "mcounteren_writable_bits": {
       "len": 32,
@@ -18,6 +29,11 @@
     "scounteren_writable_bits": {
       "len": 32,
       // No S-mode counters
+      "value": "0x0"
+    },
+    "hcounteren_writable_bits": {
+      "len": 32,
+      // No H extension
       "value": "0x0"
     },
     "privileged_isa_version": "Privileged_ISA_1_13",
@@ -60,23 +76,38 @@
         "base_alignment": 2
       }
     },
+    // No H extension, so vstvec doesn't exist; values here are unobservable.
+    "vstvec": {
+      "direct": {
+        "supported": false
+      },
+      "vectored": {
+        "supported": false,
+        "base_alignment": 2
+      }
+    },
     // These settings control whether the specified exceptions
     // cause information to be written into the appropriate
     // `xtval` registers.
     "xtval_nonzero": {
       "illegal_instruction": true,
+      "virtual_instruction": false,
       "software_breakpoint": false,
       "hardware_breakpoint": false,
       "load_address_misaligned": false,
       "load_access_fault": true,
       "load_page_fault": true,
+      "load_guest_page_fault": false,
       "samo_address_misaligned": false,
       "samo_access_fault": true,
       "samo_page_fault": true,
+      "samo_guest_page_fault": false,
       "fetch_address_misaligned": false,
       "fetch_access_fault": true,
       "fetch_page_fault": true,
+      "fetch_guest_page_fault": false,
       "software_check": true,
+      "hardware_error": false,
       "reserved_exceptions": false
     },
     "reserved_behavior": {
@@ -112,6 +143,9 @@
   },
   "memory": {
     "physaddr_bits": 32,
+    // No address translation
+    "asidlen": 0,
+    "vmidlen": 0,
     "pmp": {
       "grain": 0,
       // This specifies the number of PMP entries present.
@@ -148,10 +182,12 @@
         "vector": {
           "None": null
         },
-        // A misaligned LR/SC currently always faults, and this field can specify
-        // whether it generates an access fault (use `"AccessFault"`)
-        // or a misaligned exception (use `"AlignmentException"`).
-        "lrsc": "AlignmentException",
+        // A misaligned LR/SC can be configured independently of AMOs, but uses the same option
+        // values. Zalrsc requires `lr`/`sc` to be naturally aligned regardless of
+        // MISALIGNED_AMO, so they raise a misaligned exception.
+        "lrsc": {
+          "Some": "AlignmentException"
+        },
         // No A/Zaamo/Zalrsc, so the LR/SC and AMO settings are unobservable.
         "amo": {
           "None": null
@@ -208,7 +244,8 @@
             "vector": {
               "None": null
             },
-            "amo": "AccessFault"
+            "amo": "AccessFault",
+            "lrsc": "AccessFault"
           },
           "atomic_support": "AMONone",
           "misaligned_atomicity_granule_size_exp": 0,
@@ -248,7 +285,8 @@
             "vector": {
               "None": null
             },
-            "amo": "AccessFault"
+            "amo": "AccessFault",
+            "lrsc": "AccessFault"
           },
           // No atomics are implemented.
           "atomic_support": "AMONone",
@@ -283,6 +321,20 @@
       // No Zalrsc, so the reservation settings are unobservable.
       "invalidate_on_same_hart_store": false
     },
+    // No interrupt controller, interrupts are never raised
+    "interrupts": {
+      "machine": {
+        "software": {
+          "supported": false
+        },
+        "external": {
+          "supported": false
+        },
+        "timer": {
+          "supported": false
+        }
+      }
+    },
     "clint": {
       "supported": true,
       // This must be in a suitable memory region (see `memory.regions`)
@@ -313,7 +365,9 @@
     // Note: it is also legal for these instructions to spuriously
     // retire successfully at any point, but there is currently no
     // configuration option for this behaviour.
-    "max_time_to_wait": 0
+    "max_time_to_wait": 0,
+    // No HPM counters, so no events to count
+    "event_selectors": []
   },
   "extensions": {
     "V": {
@@ -329,6 +383,8 @@
       // Zve64x, Zve64f, and Zve64d require `elen_exp` >= 6,
       // and V requires `elen_exp` >= 6 and `vlen_exp` >= 7.
       "support_level": "Integer",
+      // Only applies if `support_level` is "Full"
+      "mutable_misa": false,
       "vlen_exp": 7,
       "elen_exp": 5,
       "vl_use_ceil": false,
@@ -354,14 +410,22 @@
     "Zvkb": {
       "supported": true
     },
+    // Ssstrict is implemented (see the UDB config), but Sail only allows enabling it together with
+    // S. It only affects the ISA string reported by Sail, its behavior is strict either way.
+    "Ssstrict": {
+      "supported": false
+    },
     // Everything below is disabled, only base ISA and vector extensions above are enabled
     "A": {
+      "mutable_misa": false,
       "supported": false
     },
     "B": {
+      "mutable_misa": false,
       "supported": false
     },
     "M": {
+      "mutable_misa": false,
       "supported": false
     },
     "Zaamo": {
@@ -420,16 +484,10 @@
     "Zcb": {
       "supported": false
     },
-    "Zcmp": {
-      "supported": false
-    },
     "Zicond": {
       "supported": false
     },
     "Zifencei": {
-      "supported": false
-    },
-    "Zkn": {
       "supported": false
     },
     "Zknd": {
@@ -455,13 +513,128 @@
       "supported": false
     },
     "D": {
+      "mutable_misa": false,
       "supported": false
     },
     "F": {
+      "mutable_misa": false,
       "supported": false,
       "fflags_dirty_policy": "Fflags_Dirty_Precise"
     },
     "S": {
+      "mutable_misa": false,
+      "supported": false,
+      "interrupts": {
+        "software": {
+          "supported": false
+        },
+        "external": {
+          "supported": false
+        },
+        "timer": {
+          "supported": false
+        }
+      }
+    },
+    "C": {
+      // There is no `supported` option for C, it is derived from Zca, Zcf and Zcd
+      "mutable_misa": false
+    },
+    "H": {
+      "mutable_misa": false,
+      "supported": false,
+      "geilen": 0,
+      "guest_page_fault_writes_htval": false,
+      "transformed_instruction": {
+        "load_access_fault": false,
+        "load_address_misaligned": false,
+        "load_guest_page_fault": false,
+        "load_page_fault": false,
+        "samo_access_fault": false,
+        "samo_address_misaligned": false,
+        "samo_guest_page_fault": false,
+        "samo_page_fault": false
+      },
+      "hgatp_modes": {
+        "Sv32x4": false,
+        "Sv39x4": false,
+        "Sv48x4": false,
+        "Sv57x4": false
+      },
+      "vsatp_modes": {
+        "Sv32": false,
+        "Sv39": false,
+        "Sv48": false,
+        "Sv57": false
+      }
+    },
+    "Sdtrig": {
+      "supported": false,
+      "breakpoint_reentrancy": "No_reentrancy_support",
+      "etrigger": {
+        "supported": false,
+        "supported_exceptions": {
+          "len": "xlen",
+          "value": "0x0"
+        }
+      },
+      "hcontext": {
+        "supported": false
+      },
+      "icount": {
+        "supported": false,
+        "count_hardwired_one": false,
+        "self_write_sets_pending": false
+      },
+      "itrigger": {
+        "supported": false,
+        "supported_interrupts": {
+          "len": "xlen",
+          "value": "0x0"
+        }
+      },
+      "mcontext": {
+        "supported": false
+      },
+      "num_triggers": 0,
+      "scontext": {
+        "supported": false
+      }
+    },
+    "Sha": {
+      "supported": false
+    },
+    "Shcounterenw": {
+      "supported": false
+    },
+    "Shgatpa": {
+      "supported": false
+    },
+    "Shtvala": {
+      "supported": false
+    },
+    "Shvsatpa": {
+      "supported": false
+    },
+    "Shvstvala": {
+      "supported": false
+    },
+    "Shvstvecd": {
+      "supported": false
+    },
+    "Smdbltrp": {
+      "supported": false
+    },
+    "Ssdbltrp": {
+      "supported": false
+    },
+    "Sstvecd": {
+      "supported": false
+    },
+    "Svukte": {
+      "supported": false
+    },
+    "Zilx": {
       "supported": false
     },
     "Smcntrpmf": {
@@ -550,6 +723,7 @@
       "supported": false
     },
     "U": {
+      "mutable_misa": false,
       "supported": false
     },
     "Zcd": {
