@@ -79,12 +79,13 @@ where
     #[inline(always)]
     #[cfg_attr(feature = "no-panic", no_panic_const::no_panic(const))]
     fn prepare_csr_read(
-        _env: &Env,
+        env: &Env,
         csr_index: u16,
         will_write: bool,
         raw_value: Reg::Type,
         output_value: &mut Reg::Type,
     ) -> Result<bool, CsrError> {
+        let _: &Env = env;
         if csr_index == SEED_CSR_INDEX {
             if will_write {
                 *output_value = raw_value;
