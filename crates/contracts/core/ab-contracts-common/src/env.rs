@@ -97,9 +97,10 @@ impl<'a> PreparedMethod<'a> {
     ///   `external_args`, and must not be accessed other than through `external_args`, while slot
     ///   addresses and inputs must not be written to
     ///
-    /// Whether sizes and alignment of inputs and outputs match the types of the method's arguments
-    /// is not part of this contract, since only the executor has the method's metadata to check
-    /// them against.
+    /// Whether sizes and contents of inputs and outputs are valid for the types of the method's
+    /// arguments is not part of this contract, since the called method checks them, and neither
+    /// is the alignment of their pointers, since only the executor has the method's metadata to
+    /// check it against.
     #[inline(always)]
     #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     pub unsafe fn new_untyped<Args>(

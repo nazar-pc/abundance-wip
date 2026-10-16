@@ -39,7 +39,8 @@ pub(super) struct NativeExecutorContext<'a> {
 // outputs through their `IoType` implementation and writes the return value before returning
 // success. Only output sizes are written into `external_args`, and only after the
 // callee succeeded and if they don't exceed capacities, and no pointers are kept after the call.
-// Contracts and arguments are trusted to match metadata of the method rather than checked, see
+// Contracts and pointers of arguments are trusted to match metadata of the method rather than
+// checked (sizes and contents of inputs and outputs are checked by the callee), see
 // `NativeExecutor`.
 unsafe impl ExecutorContext for NativeExecutorContext<'_> {
     fn call(
@@ -101,10 +102,11 @@ unsafe impl ExecutorContext for NativeExecutorContext<'_> {
 
         // SAFETY: `method_details` were found by the fingerprint of `prepared_method`, so
         // `external_args` are laid out as `ExternalArgs` of this exact method, as required by
-        // `ExternalArgs` for typed calls and by `PreparedMethod::new_untyped()` otherwise. Sizes
-        // and alignment of inputs and outputs are not checked against metadata, the native
-        // executor trusts callers instead (see `NativeExecutor`).
-        // TODO: Check sizes and alignment of inputs and outputs in `external_args` against the
+        // `ExternalArgs` for typed calls and by `PreparedMethod::new_untyped()` otherwise.
+        // Alignment of pointers of inputs and outputs is not checked against metadata, the native
+        // executor trusts callers instead, while sizes and contents are checked by the called
+        // method (see `NativeExecutor`).
+        // TODO: Check alignment of pointers of inputs and outputs in `external_args` against the
         //  method's metadata, which `PreparedMethod::new_untyped()` leaves to the executor
         unsafe {
             make_ffi_call(
