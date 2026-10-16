@@ -27,22 +27,26 @@ const impl<Reg, Hart, Env> ExecutableInstructionCsr<Env> for ZveXxConfigInstruct
 where
     Reg: [const] Register,
     Hart: VectorHartConfig<Reg = Reg>,
-    Env: [const] Csrs<Reg>,
+    Env: [const] VectorRegistersExt<Hart = Hart>,
 {
     /// Validate reads to vector CSRs from Zicsr instructions.
     ///
-    /// All vector CSRs are accessible from unprivileged code (U-mode).
-    /// Reads are pass-through: the raw value stored in the CSR is the output value.
+    /// All vector CSRs are accessible from unprivileged code (U-mode), but not while vector
+    /// instructions are disallowed (`mstatus.VS == Off`). Reads are pass-through: the raw value
+    /// stored in the CSR is the output value.
     #[inline(always)]
     #[cfg_attr(feature = "no-panic", no_panic_const::no_panic(const))]
     fn prepare_csr_read(
-        _env: &Env,
+        env: &Env,
         csr_index: u16,
         _will_write: bool,
         raw_value: Reg::Type,
         output_value: &mut Reg::Type,
     ) -> Result<bool, CsrError> {
         if VectorCsr::from_csr_index(csr_index).is_some() {
+            if !env.vector_instructions_allowed() {
+                Err(CsrError::IllegalRead { csr_index })?;
+            }
             *output_value = raw_value;
             Ok(true)
         } else {
@@ -58,7 +62,11 @@ where
     /// - `vxsat`: only bit 0 is writable; mirrors into `vcsr[0]`
     /// - `vxrm`: only bits `[1:0]` are writable; mirrors into `vcsr[2:1]`
     /// - `vcsr`: only bits `[2:0]` are writable; mirrors into `vxsat` and `vxrm`
-    /// - `vstart`: full XLEN write allowed (WARL, implementation may restrict range)
+    /// - `vstart`: only enough bits to hold the largest element index (VLMAX is at most VLEN) are
+    ///   writable, upper bits are ignored
+    ///
+    /// Writes are illegal while vector instructions are disallowed (`mstatus.VS == Off`), and
+    /// successful writes mark the vector state dirty.
     #[inline(always)]
     #[cfg_attr(feature = "no-panic", no_panic_const::no_panic(const))]
     fn prepare_csr_write(
@@ -68,12 +76,14 @@ where
         output_value: &mut Reg::Type,
     ) -> Result<bool, CsrError> {
         if let Some(vcsr) = VectorCsr::from_csr_index(csr_index) {
+            if !env.vector_instructions_allowed() {
+                Err(CsrError::IllegalWrite { csr_index })?;
+            }
             // WARL: mask to valid bits, zero upper bits
             *output_value = match vcsr {
                 VectorCsr::Vstart => {
-                    // WARL: allow full XLEN write, but clamp to implementation-supported range
-                    let max = Reg::Type::from(u16::MAX);
-                    write_value.min(max)
+                    // WARL: the largest VLMAX (LMUL=8, SEW=8) is VLEN, which is a power of two
+                    write_value & Reg::Type::from(u32::from(Hart::VECTOR_LENGTHS.vlen) - 1)
                 }
                 VectorCsr::Vxsat => {
                     let masked = write_value & Reg::Type::from(1u8);
@@ -107,6 +117,7 @@ where
                     Err(CsrError::ReadOnly { csr_index })?
                 }
             };
+            env.mark_vs_dirty();
             Ok(true)
         } else {
             Ok(false)
