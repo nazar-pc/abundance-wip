@@ -24,11 +24,8 @@
 # the same way as the rest of the S/U-only suite, since this core has no S/U mode.
 #
 # MEI_INTR_IMPL, MSI_INTR_IMPL and MTI_INTR_IMPL are all false (see the UDB config), so
-# InterruptsSm only exercises interrupt-related bins that don't need an interrupt to actually fire,
-# it skips the ones that would need a CLINT-mapped mtimecmp/msip register. ZawrsSm is excluded via
-# EXCLUDE_EXTENSIONS (see README.md / rust.yml) for now: its cp_wrs_resume and cp_wrs_no_mie
-# coverpoints aren't gated on these parameters yet, so they either wait forever for a timer
-# interrupt or abort the test.
+# InterruptsSm and ZawrsSm skip the bins that need an interrupt to become pending, which leaves
+# InterruptsSm with no bins at all.
 # TODO: revisit once/if the interpreter grows a CLINT-style mtimecmp/msip device - that would let
 #   InterruptsSm and ZawrsSm's interrupt bins run too.
 
