@@ -58,15 +58,16 @@ impl<Reg, Hart, Env> ExecutableInstructionCsr<Env> for MachineModePlaceholder<Ha
 where
     Reg: Register,
     Hart: HartConfig<Reg = Reg>,
-    Env: Csrs<Reg> + crate::interpreter::CoreConfigProvider,
+    Env: Csrs<Reg> + crate::interpreter::CoreEnv,
 {
     fn prepare_csr_read(
-        _env: &Env,
+        env: &Env,
         csr_index: u16,
         _will_write: bool,
         raw_value: Reg::Type,
         output_value: &mut Reg::Type,
     ) -> Result<bool, CsrError> {
+        let _: &Env = env;
         if matches!(
             MCsr::from_index(csr_index),
             Some(
@@ -79,7 +80,6 @@ where
                     | MCsr::Mie
                     | MCsr::Mtvec
                     | MCsr::Mstatush
-                    | MCsr::Mcountinhibit
                     | MCsr::Mscratch
                     | MCsr::Mepc
                     | MCsr::Mcause
@@ -88,8 +88,13 @@ where
                     | MCsr::Mconfigptr
                     | MCsr::Mseccfg
                     | MCsr::Mseccfgh
+                    | MCsr::Mcycle
+                    | MCsr::Minstret
+                    | MCsr::Mcycleh
+                    | MCsr::Minstreth
             )
-        ) {
+        ) || crate::interpreter::is_hpm_csr::<Reg>(csr_index)
+        {
             *output_value = raw_value;
             Ok(true)
         } else {
@@ -104,12 +109,18 @@ where
         output_value: &mut Reg::Type,
     ) -> Result<bool, CsrError> {
         match MCsr::from_index(csr_index) {
-            Some(MCsr::Mscratch | MCsr::Mcause | MCsr::Mtval) => {
+            _ if crate::interpreter::is_hpm_csr::<Reg>(csr_index) => {
+                // No HPM counters are implemented, so these are read-only zero
+                *output_value = Reg::Type::from(0u32);
+                Ok(true)
+            }
+            Some(MCsr::Minstret | MCsr::Minstreth) => {
+                env.suppress_minstret_increment();
                 *output_value = write_value;
                 Ok(true)
             }
-            Some(MCsr::Mcountinhibit) => {
-                *output_value = crate::interpreter::mask_mcountinhibit::<Reg>(write_value);
+            Some(MCsr::Mscratch | MCsr::Mcause | MCsr::Mtval | MCsr::Mcycle | MCsr::Mcycleh) => {
+                *output_value = write_value;
                 Ok(true)
             }
             Some(MCsr::Mtvec) => {
@@ -158,12 +169,10 @@ where
                 *output_value = Reg::Type::from(0u32);
                 Ok(true)
             }
-            Some(MCsr::Mie) => {
-                *output_value = crate::interpreter::mask_mie::<Reg>(write_value);
-                Ok(true)
-            }
-            Some(MCsr::Mip) => {
-                *output_value = crate::interpreter::mask_mip::<Reg>(write_value);
+            Some(MCsr::Mie | MCsr::Mip) => {
+                // No interrupts are implemented (MEI_INTR_IMPL, MSI_INTR_IMPL and MTI_INTR_IMPL
+                // are all false) and there is no S/U-mode, so every bit is read-only zero
+                *output_value = Reg::Type::from(0u32);
                 Ok(true)
             }
             _ => Ok(false),
@@ -177,7 +186,7 @@ impl<Reg, Hart, Regs, Env, Memory, PC> ExecutableInstruction<Regs, Env, Memory, 
 where
     Reg: Register,
     Hart: HartConfig<Reg = Reg>,
-    Env: crate::interpreter::CoreConfigProvider,
+    Env: crate::interpreter::CoreEnv,
 {
     fn execute(
         self,

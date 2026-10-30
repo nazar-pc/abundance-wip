@@ -12,11 +12,10 @@
 // These cores are M-mode only (no S/U), but do implement a real, writable
 // mtvec and dispatch traps (ecall, illegal instruction, ...) through it -
 // see TestEnv::take_trap() in the runner. Defining this lets the framework
-// install and use its own real trap handler (RVTEST_TRAP_HANDLER), instead
-// of leaving tests that rely on it (e.g. any RVTEST_GOTO_MMODE user, or
-// extensions - like Zkr - whose tests are registered under priv/) with no
-// working trap handler at all. Every other DUT config in this framework
-// defines this the same way, leaving RVMODEL_BOOT undefined below.
+// install and use its own real trap handler, instead of leaving tests that
+// rely on it (e.g. any RVTEST_GOTO_MMODE user, or extensions - like Zkr -
+// whose tests are registered under priv/) with no working trap handler at
+// all. RVMODEL_BOOT_TO_MMODE is left undefined, the default boot works.
 // ---------------------------------------------------------------------------
 #define STANDARD_SM_SUPPORTED
 
@@ -43,43 +42,24 @@
 // ---------------------------------------------------------------------------
 #define RVMODEL_HALT_FAIL  _RVMODEL_HTIF_EXIT(3)
 
-// ---------------------------------------------------------------------------
-// Legacy RVMODEL_HALT (used by signature-phase ELFs): pass exit.
-// ---------------------------------------------------------------------------
-#define RVMODEL_HALT  RVMODEL_HALT_PASS
-
 # Perform boot operations. Can be empty or left undefined unless needed for
 # DUT-specific behavior such as turning on a memory controller or
 # initializing custom state.
 //#define RVMODEL_BOOT
 
 // ---------------------------------------------------------------------------
-// Data section placement: default .data section is fine.
+// HTIF tohost/fromhost placement.
 // ---------------------------------------------------------------------------
 #define RVMODEL_DATA_SECTION \
     .pushsection .tohost,"aw",@progbits;                \
-    .align 8; .global tohost; tohost: .dword 0;         \
-    .align 8; .global fromhost; fromhost: .dword 0;     \
+    .balign 8; .global tohost; tohost: .dword 0;        \
+    .balign 8; .global fromhost; fromhost: .dword 0;    \
     .popsection
 
 // ---------------------------------------------------------------------------
-// Signature region markers (16-byte aligned per ACT4 spec).
-// ---------------------------------------------------------------------------
-#define RVMODEL_DATA_BEGIN              \
-    .align 4;                           \
-    .global begin_signature;            \
-    begin_signature:
-
-#define RVMODEL_DATA_END                \
-    .align 4;                           \
-    .global end_signature;              \
-    end_signature:
-
-// ---------------------------------------------------------------------------
 // Console I/O: no console available, leave blank.
-// The macros take register arguments (_R1, _R2, _R3) and a string pointer.
+// The macro takes register arguments (_R1, _R2, _R3) and a string pointer.
 // ---------------------------------------------------------------------------
-#define RVMODEL_IO_INIT(_R1, _R2, _R3)
 #define RVMODEL_IO_WRITE_STR(_R1, _R2, _R3, _STR_PTR)
 
 // ---------------------------------------------------------------------------
@@ -88,45 +68,16 @@
 #define RVMODEL_ACCESS_FAULT_ADDRESS 0x00000000
 
 // ---------------------------------------------------------------------------
-// Timer: no CLINT accessible from test code. RVMODEL_MTIME_ADDRESS is
-// intentionally left undefined - it is not required (see check_defines.h:
-// "If RVMODEL_MTIME_ADDRESS is not defined, no machine timer interrupts are
-// tested"), and defining it would make RVTEST_TRAP_PROLOG (under
-// STANDARD_SM_SUPPORTED) write to RVMODEL_MTIMECMP_ADDRESS during boot,
-// which is not backed by real memory in this DUT's memory map (only
-// RAM_BASE..RAM_BASE+RAM_SIZE is, see main.rs) and would fault. The CLINT
+// Interrupts: there is no CLINT, interrupt controller or timer accessible
+// from test code, and MEI_INTR_IMPL/MSI_INTR_IMPL/MTI_INTR_IMPL are all false
+// in the UDB config, so no interrupt is ever raised. RVMODEL_MTIME_ADDRESS,
+// RVMODEL_MTIMECMP_ADDRESS, RVMODEL_MSIP_ADDRESS and the
+// RVMODEL_{SET,CLR}_*_INT macros are intentionally left undefined, letting
+// the framework's trap handler abort on any unexpected interrupt. The CLINT
 // address in sail.json is for Sail's own reference-model use only.
+//
+// The two below are still required under STANDARD_SM_SUPPORTED, but are
+// never used with no interrupts implemented.
 // ---------------------------------------------------------------------------
-
-// No timers
-
-#define RVMODEL_TIMER_INT_SOON_DELAY
-
-// ---------------------------------------------------------------------------
-// mtvec alignment.
-// ---------------------------------------------------------------------------
-#define RVMODEL_MTVEC_ALIGN 2
-
-// ---------------------------------------------------------------------------
-// Interrupt stubs - no interrupt controller implemented.
-// ---------------------------------------------------------------------------
-#define RVMODEL_SET_MSW_INT(_R1, _R2)
-#define RVMODEL_CLR_MSW_INT(_R1, _R2)
-#define RVMODEL_SET_MEXT_INT(_R1, _R2)
-#define RVMODEL_CLR_MEXT_INT(_R1, _R2)
-#define RVMODEL_SET_SSW_INT(_R1, _R2)
-#define RVMODEL_CLR_SSW_INT(_R1, _R2)
-#define RVMODEL_SET_SEXT_INT(_R1, _R2)
-#define RVMODEL_CLR_SEXT_INT(_R1, _R2)
-#define RVMODEL_CLR_STIMER_INT(_R1, _R2)
-// RVMODEL_SET_VSW_INT / RVMODEL_CLR_VSW_INT are intentionally NOT defined
-// here: the framework invokes them bare, with no arguments (see
-// rvtest_trap_handler.h's `clr_Vsw_int` label), unlike their MSW/SSW
-// siblings. A function-like macro taking (_R1, _R2) never expands at a
-// parenthesis-less call site, so defining them like the others left the
-// literal macro name in the generated assembly and broke the build under
-// STANDARD_SM_SUPPORTED. Leaving them undefined lets the framework's own
-// `#ifndef` fallback (abort via RVTEST_DFLT_INT_HNDLR) apply, which is
-// correct since these cores don't implement the H extension and should
-// never actually take a VS-mode software interrupt.
-#define RVMODEL_INTERRUPT_LATENCY
+#define RVMODEL_INTERRUPT_LATENCY 1
+#define RVMODEL_TIMER_INT_SOON_DELAY 1
