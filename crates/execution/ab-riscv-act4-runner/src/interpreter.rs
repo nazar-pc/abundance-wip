@@ -60,20 +60,23 @@ pub(crate) struct CoreConfig {
     pub(crate) zca: bool,
 }
 
-/// Access to the configuration of the core under test from within instruction implementations
-pub(crate) trait CoreConfigProvider {
+/// Access to the core under test from within instruction implementations
+pub(crate) trait CoreEnv {
     /// Configuration of the core under test
     fn core_config(&self) -> &CoreConfig;
+
+    /// Suppress the `minstret` increment of the current instruction, since it wrote `minstret`
+    fn suppress_minstret_increment(&mut self);
 }
 
 /// Fixed `misa` value for the core.
 ///
-/// `MISA_CSR_IMPLEMENTED: false` (per `sail.json`'s `writable_misa: false`) only means misa isn't
-/// *writable* - every write is WARL-ignored - not that it reads back all zero. MXL (top 2 bits)
-/// reports the hart's fixed base ISA width, and each extension-letter bit reports whether that
-/// single-letter extension is actually implemented; both stay readable and accurate regardless of
-/// writability (verified against the reference model). `Z*` sub-extensions have no misa bit of
-/// their own, neither do `Zve*` (only the full `V` extension sets `misa.V`).
+/// `MISA_CSR_IMPLEMENTED: false` (per `sail.json`'s `mutable_misa: false` for every extension) only
+/// means misa isn't *writable* - every write is WARL-ignored - not that it reads back all zero. MXL
+/// (top 2 bits) reports the hart's fixed base ISA width, and each extension-letter bit reports
+/// whether that single-letter extension is actually implemented; both stay readable and accurate
+/// regardless of writability (verified against the reference model). `Z*` sub-extensions have no
+/// misa bit of their own, neither do `Zve*` (only the full `V` extension sets `misa.V`).
 fn misa_value<Reg>(extensions: u32) -> Reg::Type
 where
     Reg: Register,
@@ -82,39 +85,17 @@ where
     (mxl << (Reg::XLEN - 2)) | Reg::Type::from(extensions)
 }
 
-/// Mask a raw `mie` value down to `MSIE`/`MTIE`/`MEIE` (bits 3, 7, 11). Every other bit is either
-/// WPRI or requires S-mode/U-mode (`SSIE`/`STIE`/`SEIE`/`USIE`/`UTIE`/`UEIE`), neither of which
-/// this core implements, so those are forced to read-only zero.
-pub(crate) fn mask_mie<Reg>(value: Reg::Type) -> Reg::Type
+/// Whether a CSR index is one of `mhpmevent3..31`, `mhpmcounter3..31` or, on RV32,
+/// `mhpmcounter3h..31h`.
+///
+/// The privileged spec requires all of them to exist in M-mode, but since no HPM counters are
+/// implemented (HPM_COUNTER_EN is all false), they are read-only zero.
+pub(crate) fn is_hpm_csr<Reg>(csr_index: u16) -> bool
 where
     Reg: Register,
 {
-    let one = Reg::Type::from(1u8);
-    value & ((one << 3) | (one << 7) | (one << 11))
-}
-
-/// Mask a raw `mcountinhibit` value: bit 1 is WPRI (reserved, always 0) - every other bit (CY,
-/// IR, and the HPM3..31 inhibit bits) is plain read/write storage, since MCOUNTINHIBIT_IMPLEMENTED
-/// being false only means inhibiting doesn't actually stop any counter (this core doesn't count
-/// anything to begin with), not that the bits themselves aren't storable.
-pub(crate) fn mask_mcountinhibit<Reg>(value: Reg::Type) -> Reg::Type
-where
-    Reg: Register,
-{
-    value & !(Reg::Type::from(1u8) << 1u8)
-}
-
-/// `mip` is fully read-only on this core, regardless of what's written to it (verified against
-/// the reference model: writing all-ones then all-zeros both read back identically). `MEIP`/`SEIP`
-/// would normally be wired to an external interrupt controller and `MSIP` to a CLINT-style
-/// memory-mapped register - neither exists here, so both are always 0. `MTIP` is permanently 1:
-/// with no real `mtimecmp` to compare against, the reference model's timer is trivially always
-/// pending (mtime, starting at 0, is never less than a never-configured mtimecmp).
-pub(crate) fn mask_mip<Reg>(_value: Reg::Type) -> Reg::Type
-where
-    Reg: Register,
-{
-    Reg::Type::from(1u8) << 7
+    matches!(csr_index, 0x323..=0x33f | 0xb03..=0xb1f)
+        || (Reg::XLEN == 32 && matches!(csr_index, 0xb83..=0xb9f))
 }
 
 /// Execution environment of the core under test
@@ -127,6 +108,12 @@ where
     reservation: Option<<Hart::Reg as Register>::Type>,
     entropy_source: ChaCha8Rng,
     core_config: CoreConfig,
+    /// Whether an instruction was executed (or trapped) since the last [`TestEnv::finish_step()`]
+    step_pending: bool,
+    /// Whether the pending step retired an instruction rather than trapping
+    retire_pending: bool,
+    /// Whether the pending step wrote `minstret`/`minstreth`, which suppresses its increment
+    minstret_written: bool,
 }
 
 impl<Reg, Hart> TestEnv<Hart>
@@ -174,13 +161,16 @@ where
             MCsr::Misa as u16,
             misa_value::<Reg>(core_config.misa_extensions),
         );
+        // MEI_INTR_IMPL, MSI_INTR_IMPL and MTI_INTR_IMPL are all false, and there is no S/U-mode,
+        // so every interrupt-enable and interrupt-pending bit is read-only zero, see
+        // instruction.rs's prepare_csr_write
         csrs.insert(MCsr::Mie as u16, zero);
         csrs.insert(MCsr::Mtvec as u16, zero);
         csrs.insert(MCsr::Mscratch as u16, zero);
         csrs.insert(MCsr::Mepc as u16, zero);
         csrs.insert(MCsr::Mcause as u16, zero);
         csrs.insert(MCsr::Mtval as u16, zero);
-        csrs.insert(MCsr::Mip as u16, mask_mip::<Reg>(zero));
+        csrs.insert(MCsr::Mip as u16, zero);
         // mstatush only exists on RV32 (on RV64 its fields live in mstatus directly); the ACT4
         // framework's default M-mode boot (RVTEST_BOOT_TO_MMODE, under STANDARD_SM_SUPPORTED)
         // unconditionally clears it unless SM1P11P0_SUPPORTED is defined, which this core does
@@ -188,8 +178,6 @@ where
         if Reg::XLEN == 32 {
             csrs.insert(MCsr::Mstatush as u16, zero);
         }
-        // mcountinhibit must always be implemented, independent of any extension
-        csrs.insert(MCsr::Mcountinhibit as u16, zero);
         // mseccfg (and mseccfgh, RV32 only) only exist when Zkr is implemented (it gates
         // SSEED/USEED access to the seed CSR), since neither Smepmp (MML/MMWP/RLB) nor any other
         // extension that would need them is. There's no S/U mode for SSEED/USEED to grant access
@@ -202,18 +190,28 @@ where
             }
             csrs.insert(SEED_CSR_INDEX, zero);
         }
-        // menvcfg/menvcfgh, mcycle/minstret/mcycleh/minstreth and mhpmcounter/mhpmeventN are
-        // deliberately NOT inserted here: verified against the reference model (via its actual
-        // execution trace, not just the embedded expected-signature values) that every access to
-        // any of them traps illegal - see Sm_mcsr_access-00.sig.trace's "trapping from M to M to
-        // handle illegal-instruction" entries for both csrrw and csrrs against menvcfg (0x30A).
-        // sail-riscv's own source confirms why: `is_CSR_accessible` gates menvcfg/menvcfgh behind
-        // `Ext_U`, mcycle/minstret/mcycleh/minstreth behind `Ext_Zicntr`, and
-        // mhpmcounterN/mhpmeventN behind `Ext_Zihpm` - all three are `false` in this DUT's
-        // `sail.json`. The realistic-looking values some Sm_mcsr_walk-* coverpoints appear to read
-        // back are coincidental: those checkpoints reuse the same register across the (trapped,
-        // no-op) CSR access and the surrounding non-CSR masking arithmetic, so the "expected" value
-        // is really just that arithmetic's own result, not a real CSR read.
+        // mcycle/minstret (mcycleh/minstreth on RV32) always exist in M-mode, see
+        // `TestEnv::finish_step()` for how they count. So do mhpmevent3..31 and mhpmcounter3..31
+        // (mhpmcounter3h..31h on RV32), but with no HPM counters implemented they are read-only
+        // zero, see `is_hpm_csr()`.
+        csrs.insert(MCsr::Mcycle as u16, zero);
+        csrs.insert(MCsr::Minstret as u16, zero);
+        if Reg::XLEN == 32 {
+            csrs.insert(MCsr::Mcycleh as u16, zero);
+            csrs.insert(MCsr::Minstreth as u16, zero);
+        }
+        for csr_index in (0x323..=0x33f).chain(0xb03..=0xb1f) {
+            csrs.insert(csr_index, zero);
+        }
+        if Reg::XLEN == 32 {
+            for csr_index in 0xb83..=0xb9f {
+                csrs.insert(csr_index, zero);
+            }
+        }
+        // mcountinhibit and menvcfg/menvcfgh are deliberately NOT inserted here, every access to
+        // them traps illegal in the reference model: sail-riscv's `is_CSR_accessible` gates
+        // mcountinhibit behind `base.mcountinhibit.supported` (MCOUNTINHIBIT_IMPLEMENTED) and
+        // menvcfg/menvcfgh behind `Ext_U`, both of which are `false` in this DUT's `sail.json`.
         //
         // mconfigptr must always be implemented (read-only); CONFIG_PTR_ADDRESS is 0 for this core
         csrs.insert(MCsr::Mconfigptr as u16, zero);
@@ -225,9 +223,54 @@ where
             // Good enough for testing purposes
             entropy_source: ChaCha8Rng::from_seed([0; _]),
             core_config,
+            step_pending: false,
+            retire_pending: false,
+            minstret_written: false,
         };
         s.initialize_vector_state();
         s
+    }
+
+    /// Mark the start of an instruction that is about to be executed, see [`Self::finish_step()`]
+    pub(crate) fn begin_step(&mut self) {
+        self.step_pending = true;
+        self.retire_pending = true;
+    }
+
+    /// Update counters after the previous instruction, called before the next one is fetched.
+    ///
+    /// Matches the reference model: `mcycle` increments after every executed or trapped
+    /// instruction, even one that wrote `mcycle` itself, while `minstret` only increments when an
+    /// instruction retires without writing `minstret`. Neither can be inhibited, since
+    /// MCOUNTINHIBIT_IMPLEMENTED is false.
+    pub(crate) fn finish_step(&mut self) {
+        if !self.step_pending {
+            return;
+        }
+        self.increment_counter(MCsr::Mcycle, MCsr::Mcycleh);
+        if self.retire_pending && !self.minstret_written {
+            self.increment_counter(MCsr::Minstret, MCsr::Minstreth);
+        }
+        self.step_pending = false;
+        self.retire_pending = false;
+        self.minstret_written = false;
+    }
+
+    fn increment_counter(&mut self, low: MCsr, high: MCsr) {
+        let low_value = self.csrs[&(low as u16)].as_u64();
+        if Reg::XLEN == 32 {
+            let high_value = self.csrs[&(high as u16)].as_u64();
+            let value = ((high_value << 32) | low_value).wrapping_add(1);
+            self.csrs
+                .insert(low as u16, Reg::Type::truncate_from_u64(value));
+            self.csrs
+                .insert(high as u16, Reg::Type::truncate_from_u64(value >> 32));
+        } else {
+            self.csrs.insert(
+                low as u16,
+                Reg::Type::truncate_from_u64(low_value.wrapping_add(1)),
+            );
+        }
     }
 
     /// Dispatch a synchronous trap, returning the new PC (mtvec target).
@@ -244,6 +287,9 @@ where
     where
         MCause: From<Cause>,
     {
+        // A trapping instruction still takes a cycle, but doesn't retire
+        self.step_pending = true;
+        self.retire_pending = false;
         *self.csrs.get_mut(&(MCsr::Mepc as u16)).unwrap() = epc;
         *self.csrs.get_mut(&(MCsr::Mcause as u16)).unwrap() = MCause::from(cause).to_raw::<Reg>();
         *self.csrs.get_mut(&(MCsr::Mtval as u16)).unwrap() = tval;
@@ -270,6 +316,7 @@ where
     /// Handle `mret`: restore `mstatus.MIE` from `MPIE` (setting `MPIE` to 1 per spec), returning
     /// the target PC (`mepc`). `MPP` stays forced to M (the only implemented privilege mode).
     pub(crate) fn return_from_trap(&mut self) -> Reg::Type {
+        self.begin_step();
         let one = Reg::Type::from(1u8);
         let mstatus = self.csrs[&(MCsr::Mstatus as u16)];
         let mpie = (mstatus >> MSTATUS_MPIE_BIT) & one;
@@ -282,13 +329,17 @@ where
     }
 }
 
-impl<Reg, Hart> CoreConfigProvider for TestEnv<Hart>
+impl<Reg, Hart> CoreEnv for TestEnv<Hart>
 where
     Reg: Register,
     Hart: VectorHartConfig<Reg = Reg>,
 {
     fn core_config(&self) -> &CoreConfig {
         &self.core_config
+    }
+
+    fn suppress_minstret_increment(&mut self) {
+        self.minstret_written = true;
     }
 }
 
@@ -318,9 +369,10 @@ where
     }
 }
 
-impl<Hart> VectorRegisters for TestEnv<Hart>
+impl<Reg, Hart> VectorRegisters for TestEnv<Hart>
 where
-    Hart: VectorHartConfig,
+    Reg: Register,
+    Hart: VectorHartConfig<Reg = Reg>,
 {
     type Hart = Hart;
 
@@ -333,10 +385,20 @@ where
     }
 
     fn vector_instructions_allowed(&self) -> bool {
-        true
+        // Vector instructions are illegal while `mstatus.VS` is Off
+        let mstatus = self.csrs[&(MCsr::Mstatus as u16)];
+        (mstatus >> MSTATUS_VS_BIT) & Reg::Type::from(0b11u8) != Reg::Type::default()
     }
 
-    fn mark_vs_dirty(&mut self) {}
+    fn mark_vs_dirty(&mut self) {
+        // HW_MSTATUS_VS_DIRTY_UPDATE is precise, so `mstatus.VS` becomes Dirty whenever vector
+        // state is modified
+        let mstatus = self.csrs[&(MCsr::Mstatus as u16)];
+        self.csrs.insert(
+            MCsr::Mstatus as u16,
+            mask_mstatus::<Reg>(mstatus | (Reg::Type::from(0b11u8) << MSTATUS_VS_BIT)),
+        );
+    }
 }
 
 impl<Reg, Hart> VectorRegistersExt for TestEnv<Hart>
