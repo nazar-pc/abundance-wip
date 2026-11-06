@@ -398,10 +398,7 @@ impl<'a> BeaconChainBlock<'a> {
     #[cfg(feature = "alloc")]
     #[inline(always)]
     pub fn to_owned(self) -> OwnedBeaconChainBlock {
-        OwnedBeaconChainBlock {
-            header: self.header.to_owned(),
-            body: self.body.to_owned(),
-        }
+        OwnedBeaconChainBlock::from_block(self)
     }
 }
 
@@ -505,10 +502,7 @@ impl<'a> IntermediateShardBlock<'a> {
     #[cfg(feature = "alloc")]
     #[inline(always)]
     pub fn to_owned(self) -> OwnedIntermediateShardBlock {
-        OwnedIntermediateShardBlock {
-            header: self.header.to_owned(),
-            body: self.body.to_owned(),
-        }
+        OwnedIntermediateShardBlock::from_block(self)
     }
 }
 
@@ -594,10 +588,7 @@ impl<'a> LeafShardBlock<'a> {
     #[cfg(feature = "alloc")]
     #[inline(always)]
     pub fn to_owned(self) -> OwnedLeafShardBlock {
-        OwnedLeafShardBlock {
-            header: self.header.to_owned(),
-            body: self.body.to_owned(),
-        }
+        OwnedLeafShardBlock::from_block(self)
     }
 }
 
