@@ -79,6 +79,7 @@ Improvements:
   types that use it don't implement `AnyBitPattern`
 * `IoType::set_size()` requires a size that is valid for the type, while the contents don't need to be a valid value
   when it is called, as long as they are parsed before they are accessed
+* `scale-codec` feature no longer enables the unused `bytes` feature of `parity-scale-codec`
 
 Fixes:
 
