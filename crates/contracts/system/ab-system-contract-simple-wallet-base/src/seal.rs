@@ -125,6 +125,7 @@ pub fn hash_and_verify(
     payload: &[u128],
     seal: &Seal,
 ) -> Result<(), ContractError> {
+    // Checked before hashing the transaction, `verify()` checks it again
     if seal.nonce != expected_nonce {
         return Err(ContractError::BadInput);
     }
@@ -133,8 +134,6 @@ pub fn hash_and_verify(
         .ok_or(ContractError::BadInput)?;
     let signature =
         Signature::from_bytes(&seal.signature).map_err(|_error| ContractError::BadInput)?;
-    let signing_context = SigningContext::new(SIGNING_CONTEXT);
-    public_key
-        .verify(signing_context.bytes(tx_hash.as_bytes()), &signature)
-        .map_err(|_error| ContractError::Forbidden)
+
+    verify(public_key, expected_nonce, &tx_hash, &signature, seal.nonce)
 }
