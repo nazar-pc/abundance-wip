@@ -47,6 +47,8 @@ enum ArgumentKind {
 
 #[derive(Clone)]
 struct Env {
+    /// The reference type, unlike the types of other arguments
+    type_name: Type,
     mutability: Option<Token![mut]>,
 }
 
@@ -277,6 +279,7 @@ impl MethodDetails {
             }
 
             self.env.replace(Env {
+                type_name: pat_type.ty.as_ref().clone(),
                 mutability: type_reference.mutability,
             });
             Ok(())
@@ -901,7 +904,10 @@ impl MethodDetails {
                 let #env_local = unsafe { macro_shorten_env(#args.env) };
             });
 
-            original_fn_args.push(quote! { #env_local });
+            original_fn_args.push(bind_to_reference_type(
+                &env.type_name,
+                quote! { #env_local },
+            ));
         }
 
         // Optional tmp argument
@@ -2184,6 +2190,17 @@ fn bind_to_type(
     let user_type = with_inferred_lifetimes(type_name);
     quote_spanned! {type_name.span() => {
         let argument: &#mutability #user_type = #value;
+        argument
+    }}
+}
+
+/// Like [`bind_to_type()`], but `type_name` is the whole reference type.
+///
+/// The lifetime of the reference is checked too, like `'static` in `&'static Env<'_>`.
+fn bind_to_reference_type(type_name: &Type, value: TokenStream) -> TokenStream {
+    let user_type = with_inferred_lifetimes(type_name);
+    quote_spanned! {type_name.span() => {
+        let argument: #user_type = #value;
         argument
     }}
 }
