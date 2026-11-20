@@ -6,9 +6,8 @@ use crate::{BlockVerification, BlockVerificationError, GenericHeader};
 use ab_client_api::{BeaconChainInfo, BlockOrigin, ChainSyncStatus};
 use ab_client_consensus_common::ConsensusConstants;
 use ab_client_consensus_common::consensus_parameters::{
-    CheckShardSegmentsNotConfirmedError, DeriveConsensusParametersChainInfo,
-    DeriveConsensusParametersError, DeriveSuperSegmentForBlockError,
-    ShardMembershipEntropySourceChainInfo, check_shard_segments_not_confirmed,
+    CheckShardSegmentsError, DeriveConsensusParametersChainInfo, DeriveConsensusParametersError,
+    DeriveSuperSegmentForBlockError, ShardMembershipEntropySourceChainInfo, check_shard_segments,
     derive_consensus_parameters, derive_super_segment_for_block, shard_membership_entropy_source,
 };
 use ab_client_proof_of_time::PotNextSlotInput;
@@ -60,7 +59,7 @@ pub enum BeaconChainBlockVerificationError {
     ShardSegmentsCheck {
         /// Shard segments check error
         #[from]
-        error: CheckShardSegmentsNotConfirmedError,
+        error: CheckShardSegmentsError,
     },
     /// Invalid consensus parameters
     #[error("Invalid consensus parameters: expected {expected:?}, actual {actual:?}")]
@@ -531,7 +530,7 @@ where
             });
         }
 
-        check_shard_segments_not_confirmed(
+        check_shard_segments(
             &self.chain_info,
             block_number,
             parent_block_root,
@@ -553,8 +552,9 @@ where
         )
         .map_err(BeaconChainBlockVerificationError::from)?;
 
-        // TODO: Check the rest of intermediate shard blocks and segment roots included in the body,
-        //  like continuity of local segment indices of each shard
+        // TODO: Check the rest of intermediate shard blocks included in the body, like continuity
+        //  of block numbers and parent links of child shard blocks, and cap the number of child
+        //  shard segments per body
 
         Ok(())
     }
