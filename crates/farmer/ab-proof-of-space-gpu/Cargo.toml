@@ -20,6 +20,7 @@ all-features = true
 ab-blake3 = { workspace = true }
 ab-chacha8 = { workspace = true }
 derive_more = { workspace = true, features = ["from", "into"] }
+no-panic = { workspace = true, optional = true }
 spirv-std-nightly = { workspace = true }
 
 [target.'cfg(not(target_arch = "spirv"))'.dependencies]
@@ -52,6 +53,11 @@ default = [
 # Enabled by default for the host, shader code disables this feature to remove build dependencies
 build-shader = [
     "dep:cargo-gpu-install",
+]
+# Check that shader code can't panic under any conditions (requires `build-shader` to have an effect
+# on the shader, compiling it with emulated unwinding, i.e. `-C panic=unwind`)
+no-panic = [
+    "dep:no-panic",
 ]
 
 [lints]

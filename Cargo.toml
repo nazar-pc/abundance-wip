@@ -312,3 +312,14 @@ redundant_type_annotations = "allow"
 tests_outside_test_module = "allow"
 # TODO: https://github.com/rust-lang/rust-clippy/issues/5368#issuecomment-4665479346
 verbose_file_reads = "allow"
+
+# TODO: Remove once emulated unwinding (needed for `no-panic` in shaders) is upstreamed
+[patch.crates-io]
+cargo-gpu-install = { git = "https://github.com/nazar-pc/rust-gpu", branch = "claude/no-panic-emulated-unwinding" }
+no-panic = { git = "https://github.com/nazar-pc/no-panic", branch = "claude/rust-gpu-entry-points" }
+rustc_codegen_spirv-types = { git = "https://github.com/nazar-pc/rust-gpu", branch = "claude/no-panic-emulated-unwinding" }
+spirv-builder = { git = "https://github.com/nazar-pc/rust-gpu", branch = "claude/no-panic-emulated-unwinding" }
+spirv-std = { git = "https://github.com/nazar-pc/rust-gpu", branch = "claude/no-panic-emulated-unwinding" }
+spirv-std-macros = { git = "https://github.com/nazar-pc/rust-gpu", branch = "claude/no-panic-emulated-unwinding" }
+spirv-std-nightly = { git = "https://github.com/nazar-pc/rust-gpu", branch = "claude/no-panic-emulated-unwinding" }
+spirv-std-types = { git = "https://github.com/nazar-pc/rust-gpu", branch = "claude/no-panic-emulated-unwinding" }

@@ -139,6 +139,7 @@ fn compute_f1_impl(x: X, chacha8_keystream: &[u32; INVOCATION_KEYSTREAM_WORDS]) 
 ///
 /// # Safety
 /// `bucket_sizes` must be zero-initialized, which is the case by default in `wgpu`.
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 #[spirv(compute(threads(256), entry_point_name = "compute_f1"))]
 pub unsafe fn compute_f1(
     #[spirv(global_invocation_id)] global_invocation_id: UVec3,

@@ -42,13 +42,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .within_build_script()
         .run()?;
 
+    let no_panic = env::var("CARGO_FEATURE_NO_PANIC").is_ok();
+
     // TODO: Workaround for https://github.com/Rust-GPU/rust-gpu/issues/461
     // SAFETY: Single-threaded
     unsafe {
         env::set_var("RUST_MIN_STACK", "16777216");
         // TODO: `-Znext-solver=globally` is a requirement for `generic_const_args` on the toolchain
         //  rust-gpu uses
-        env::set_var("RUSTGPU_RUSTFLAGS", "-Znext-solver=globally");
+        env::set_var(
+            "RUSTGPU_RUSTFLAGS",
+            if no_panic {
+                // `no-panic` relies on unwinding to detect panics, which rust-gpu emulates
+                "-Znext-solver=globally -Cpanic=unwind"
+            } else {
+                "-Znext-solver=globally"
+            },
+        );
     }
 
     let mut spirv_builder = backend
@@ -69,7 +79,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .target_dir_path(out_dir.clone())
         // The nested invocation compiles this build script again, and without `build-shader` it
         // does not need any of the build dependencies
-        .shader_crate_default_features(false);
+        .shader_crate_default_features(false)
+        .shader_crate_features(no_panic.then(|| "no-panic".to_string()));
 
     let path_to_spv = if env::var("CLIPPY_ARGS").is_ok() {
         match spirv_builder.clippy() {

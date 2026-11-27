@@ -736,6 +736,7 @@ dependencies = [
  "chacha20 0.10.2",
  "derive_more",
  "futures",
+ "no-panic",
  "parking_lot 0.13.0",
  "rand 0.10.4",
  "rayon",
@@ -1533,8 +1534,7 @@ dependencies = [
 [[package]]
 name = "cargo-gpu-install"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8c6cf4445c1a98835b492cc3840743bb48530c9fb793a83b8059f3544a67ae8"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#71569bb457832de7159d0acdc7add081fd9b5e27"
 dependencies = [
  "anyhow",
  "cargo_metadata 0.21.0",
@@ -4358,8 +4358,7 @@ dependencies = [
 [[package]]
 name = "no-panic"
 version = "0.1.37"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc80370b4544f28ffa317e3c3474ee3ecbfe269196c01ae657d9f837a7d944a1"
+source = "git+https://github.com/nazar-pc/no-panic?branch=claude%2Frust-gpu-entry-points#a6cd06d0e229a2160c38bad23a7dd8ece54b060e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5383,8 +5382,7 @@ checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 [[package]]
 name = "rustc_codegen_spirv-types"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bea10c6f2c154049f810e5cb154b32467f02a6b3eb58e4cb9837eca39545adca"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#71569bb457832de7159d0acdc7add081fd9b5e27"
 dependencies = [
  "rspirv",
  "semver",
@@ -5879,8 +5877,7 @@ dependencies = [
 [[package]]
 name = "spirv-builder"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7cf86e49e88ca58b901c3c586a73d9e1d6e25cafb6b36de9b53e09dc34ff15a"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#71569bb457832de7159d0acdc7add081fd9b5e27"
 dependencies = [
  "cargo_metadata 0.21.0",
  "log",
@@ -5896,8 +5893,7 @@ dependencies = [
 [[package]]
 name = "spirv-std"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfc9588ef2583f006a87af3f6fccda3a425bbc35ef9665a0cca5b1778c38b2d7"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#71569bb457832de7159d0acdc7add081fd9b5e27"
 dependencies = [
  "bitflags",
  "glam",
@@ -5910,8 +5906,7 @@ dependencies = [
 [[package]]
 name = "spirv-std-macros"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a22441c9289917af52f3062dbd8abc443c757ba3e84f5fe5d42685846fdc11f4"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#71569bb457832de7159d0acdc7add081fd9b5e27"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5922,8 +5917,7 @@ dependencies = [
 [[package]]
 name = "spirv-std-nightly"
 version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6784558f73b9d3e1c8c986537c5801738e67454eb26960961fc1a53269f7858d"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#71569bb457832de7159d0acdc7add081fd9b5e27"
 dependencies = [
  "spirv-std",
  "spirv-std-macros",
@@ -5932,8 +5926,7 @@ dependencies = [
 [[package]]
 name = "spirv-std-types"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02a52487ced352ef71eadfa854e30ca3f3e6e3dde5ba57b14c78dd9c0fb995aa"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#71569bb457832de7159d0acdc7add081fd9b5e27"
 
 [[package]]
 name = "stable_deref_trait"
