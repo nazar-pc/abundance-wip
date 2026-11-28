@@ -1534,7 +1534,7 @@ dependencies = [
 [[package]]
 name = "cargo-gpu-install"
 version = "0.11.0"
-source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#71569bb457832de7159d0acdc7add081fd9b5e27"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#8365c1e25b659a23b40bcf5c27fa1c34025e07d7"
 dependencies = [
  "anyhow",
  "cargo_metadata 0.21.0",
@@ -1807,7 +1807,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2151,7 +2151,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.10",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2258,7 +2258,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2375,7 +2375,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4398,7 +4398,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5045,7 +5045,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5382,7 +5382,7 @@ checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 [[package]]
 name = "rustc_codegen_spirv-types"
 version = "0.11.0"
-source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#71569bb457832de7159d0acdc7add081fd9b5e27"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#8365c1e25b659a23b40bcf5c27fa1c34025e07d7"
 dependencies = [
  "rspirv",
  "semver",
@@ -5420,7 +5420,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5877,7 +5877,7 @@ dependencies = [
 [[package]]
 name = "spirv-builder"
 version = "0.11.0"
-source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#71569bb457832de7159d0acdc7add081fd9b5e27"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#8365c1e25b659a23b40bcf5c27fa1c34025e07d7"
 dependencies = [
  "cargo_metadata 0.21.0",
  "log",
@@ -5893,7 +5893,7 @@ dependencies = [
 [[package]]
 name = "spirv-std"
 version = "0.11.0"
-source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#71569bb457832de7159d0acdc7add081fd9b5e27"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#8365c1e25b659a23b40bcf5c27fa1c34025e07d7"
 dependencies = [
  "bitflags",
  "glam",
@@ -5906,7 +5906,7 @@ dependencies = [
 [[package]]
 name = "spirv-std-macros"
 version = "0.11.0"
-source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#71569bb457832de7159d0acdc7add081fd9b5e27"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#8365c1e25b659a23b40bcf5c27fa1c34025e07d7"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5917,7 +5917,7 @@ dependencies = [
 [[package]]
 name = "spirv-std-nightly"
 version = "0.11.1"
-source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#71569bb457832de7159d0acdc7add081fd9b5e27"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#8365c1e25b659a23b40bcf5c27fa1c34025e07d7"
 dependencies = [
  "spirv-std",
  "spirv-std-macros",
@@ -5926,7 +5926,7 @@ dependencies = [
 [[package]]
 name = "spirv-std-types"
 version = "0.11.0"
-source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#71569bb457832de7159d0acdc7add081fd9b5e27"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#8365c1e25b659a23b40bcf5c27fa1c34025e07d7"
 
 [[package]]
 name = "stable_deref_trait"
@@ -6062,7 +6062,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6925,7 +6925,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
