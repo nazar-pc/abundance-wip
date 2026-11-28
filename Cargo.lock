@@ -1534,7 +1534,7 @@ dependencies = [
 [[package]]
 name = "cargo-gpu-install"
 version = "0.11.0"
-source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#8365c1e25b659a23b40bcf5c27fa1c34025e07d7"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Ffold-dominated-conditions#3de3d316f42416631245422155cb143048bd4a9d"
 dependencies = [
  "anyhow",
  "cargo_metadata 0.21.0",
@@ -2258,7 +2258,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4398,7 +4398,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5382,7 +5382,7 @@ checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 [[package]]
 name = "rustc_codegen_spirv-types"
 version = "0.11.0"
-source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#8365c1e25b659a23b40bcf5c27fa1c34025e07d7"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Ffold-dominated-conditions#3de3d316f42416631245422155cb143048bd4a9d"
 dependencies = [
  "rspirv",
  "semver",
@@ -5479,7 +5479,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs 0.26.11",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5877,7 +5877,7 @@ dependencies = [
 [[package]]
 name = "spirv-builder"
 version = "0.11.0"
-source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#8365c1e25b659a23b40bcf5c27fa1c34025e07d7"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Ffold-dominated-conditions#3de3d316f42416631245422155cb143048bd4a9d"
 dependencies = [
  "cargo_metadata 0.21.0",
  "log",
@@ -5893,7 +5893,7 @@ dependencies = [
 [[package]]
 name = "spirv-std"
 version = "0.11.0"
-source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#8365c1e25b659a23b40bcf5c27fa1c34025e07d7"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Ffold-dominated-conditions#3de3d316f42416631245422155cb143048bd4a9d"
 dependencies = [
  "bitflags",
  "glam",
@@ -5906,7 +5906,7 @@ dependencies = [
 [[package]]
 name = "spirv-std-macros"
 version = "0.11.0"
-source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#8365c1e25b659a23b40bcf5c27fa1c34025e07d7"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Ffold-dominated-conditions#3de3d316f42416631245422155cb143048bd4a9d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5917,7 +5917,7 @@ dependencies = [
 [[package]]
 name = "spirv-std-nightly"
 version = "0.11.1"
-source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#8365c1e25b659a23b40bcf5c27fa1c34025e07d7"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Ffold-dominated-conditions#3de3d316f42416631245422155cb143048bd4a9d"
 dependencies = [
  "spirv-std",
  "spirv-std-macros",
@@ -5926,7 +5926,7 @@ dependencies = [
 [[package]]
 name = "spirv-std-types"
 version = "0.11.0"
-source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Fno-panic-emulated-unwinding#8365c1e25b659a23b40bcf5c27fa1c34025e07d7"
+source = "git+https://github.com/nazar-pc/rust-gpu?branch=claude%2Ffold-dominated-conditions#3de3d316f42416631245422155cb143048bd4a9d"
 
 [[package]]
 name = "stable_deref_trait"
@@ -7060,15 +7060,6 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
-dependencies = [
- "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "windows-sys"
-version = "0.59.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
 ]
